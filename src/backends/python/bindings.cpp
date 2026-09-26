@@ -32,6 +32,7 @@
 #include <cmath>
 #include <cstring>
 #include <new>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -1249,6 +1250,20 @@ void Seal(TemplateRec* rec) noexcept {
     return true;
 }
 
+/// The declaration at `index`, copied out of the vector. The loops below run
+/// callbacks that may declare more members on the same template, and a vector
+/// that grows moves its elements: a reference held across that call would be
+/// left pointing at freed storage. Empty, with `MemoryError` pending, when the
+/// copy cannot be made.
+[[nodiscard]] std::optional<TemplateEntry> EntryAt(const TemplateRec* tpl, std::size_t index) noexcept {
+    try {
+        return tpl->entries[index];
+    } catch (const std::bad_alloc&) {
+        PyErr_NoMemory();
+        return std::nullopt;
+    }
+}
+
 /// Replay a template's declarations onto an object, as data and accessor
 /// properties with the declared attributes. Index loop: a declaration made
 /// from a callback this runs may add to the vector.
@@ -1259,7 +1274,11 @@ void Seal(TemplateRec* rec) noexcept {
     }
     // NOLINTNEXTLINE(modernize-loop-convert): the vector may grow under the loop - see above
     for (std::size_t i = 0; i < shape->entries.size(); ++i) {
-        const TemplateEntry& entry = shape->entries[i];
+        const std::optional<TemplateEntry> copied = EntryAt(shape, i);
+        if (!copied) {
+            return false;
+        }
+        const TemplateEntry& entry = *copied;
         PyObject* key = nullptr;
         PyObject* value = nullptr;
         if (!EntryValue(isolate, realm, entry, &key, &value)) {
@@ -1290,10 +1309,14 @@ void Seal(TemplateRec* rec) noexcept {
 [[nodiscard]] bool ApplyStatics(Isolate& isolate, ContextRec* realm, PyObject* type, TemplateRec* tpl) noexcept {
     // NOLINTNEXTLINE(modernize-loop-convert): an index loop, as in ApplyEntries and for its reason
     for (std::size_t i = 0; i < tpl->entries.size(); ++i) {
-        const TemplateEntry& entry = tpl->entries[i];
-        if (entry.kind == TemplateEntry::Kind::Accessor) {
+        if (tpl->entries[i].kind == TemplateEntry::Kind::Accessor) {
             continue;
         }
+        const std::optional<TemplateEntry> copied = EntryAt(tpl, i);
+        if (!copied) {
+            return false;
+        }
+        const TemplateEntry& entry = *copied;
         PyObject* key = nullptr;
         PyObject* value = nullptr;
         if (!EntryValue(isolate, realm, entry, &key, &value)) {
