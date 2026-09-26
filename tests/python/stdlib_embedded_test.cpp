@@ -134,6 +134,7 @@ results = [
     pathlib.PurePosixPath('a/b/c.txt').suffix,
     message['Subject'],
 ]
+db.close()
 '|'.join(results)
 )";
 
