@@ -1135,8 +1135,8 @@ runs. Everything works in the main interpreter, which never runs a script.
 
 `zoneinfo` works, but Windows has no tz database: `ZoneInfo('Europe/London')`
 needs the `tzdata` package on `sys.path`. `ssl` finds the Windows certificate
-stores by itself - but not safely from several isolates at once. 3.12's `_ssl.c`
-caches the two encoding names `enum_certificates` returns (`certEncodingType`) in
+stores by itself - but not safely from several isolates at once. `_ssl.c` (3.12,
+and 3.14 still) caches the two encoding names `enum_certificates` returns (`certEncodingType`) in
 C `static` variables: one `str` made by whichever interpreter got there first
 and reference-counted by every other under GILs of their own. Six isolates on six
 threads each calling `ssl.create_default_context()` - which reads the stores -

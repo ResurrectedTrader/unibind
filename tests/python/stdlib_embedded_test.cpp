@@ -98,7 +98,7 @@ std::string EvalInFreshIsolate(std::string_view source) {
 // imported. (Not `ssl.create_default_context()`: reading the Windows
 // certificate stores from isolates on several threads at once can corrupt the
 // heap, whichever way the standard library is served - a static cache in
-// CPython 3.12's _ssl.c, see docs/python.md.)
+// CPython's _ssl.c, see docs/python.md section 10.2.)
 constexpr std::string_view kRepresentative = R"(
 import asyncio, collections, dataclasses, decimal, email, email.message, email.parser, json, pathlib
 import re, sqlite3, ssl, typing
