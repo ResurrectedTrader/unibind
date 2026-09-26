@@ -48,9 +48,32 @@
 # somewhere else silently reports far less than this one does. The default
 # working directory is the checkout, which is what makes that true here.
 #
+# **The CPython backend is the one whose engine is built, not downloaded.**
+# Configuring `tidy-python` has vcpkg build CPython and its dependencies before
+# the project is even generated - most of an hour from nothing - so this job
+# keeps vcpkg's binary cache exactly the way the `python-suite` job in
+# `engines.yml` does, and under the *same key*: the tidy preset's triplets
+# (`x64-windows-static`, host `x64-windows`, CMakePresets.json `tidy-base`) are
+# the x64 suite job's, the manifest and overlay ports are the same files, and
+# vcpkg builds a port with its own toolchain whatever the project compiles with,
+# so the two jobs want identical archives and one cache serves both. Measured:
+# a `tidy-python` tree and a `python-x64` one install the same 30 packages with
+# the same ABI hash each, which is what vcpkg keys an archive by. Whichever
+# job misses first saves it; the other's save is then refused as a duplicate,
+# which is a warning and not a failure. The cache steps are python-only: V8 and
+# SpiderMonkey are downloaded engines and their vcpkg install is doctest alone.
+#
+# What it lints is the backend, its suite (`tests/python`) and the REPL example,
+# which is part of that tree - with the example's own header in the filter, by
+# a `.clang-tidy` in its directory. Not the frozen standard library: that
+# `.cpp` is generated at build time, `#embed`s some ten megabytes of bytecode,
+# and is compiled as an object library the compile database leaves out
+# (src/backends/python/CMakeLists.txt) - so it is neither linted nor needed on
+# disk before tidy runs.
+#
 # Both jobs are blocking, because the tree is clean today and the point of
-# getting it there was to keep it there. `v8.yml` has the non-blocking canary if
-# a future check wants to start that way.
+# getting it there was to keep it there. The `v8-canary` job in `engines.yml` is
+# the non-blocking one, if a future check wants to start that way.
 
 name: lint
 
@@ -94,11 +117,21 @@ jobs:
   tidy:
     name: clang-tidy against ${{ matrix.backend }}
     runs-on: windows-2022
-    timeout-minutes: 120
+    # CPython from an empty vcpkg cache is most of an hour before tidy starts,
+    # which is why `python-suite` allows 180; the same allowance here.
+    timeout-minutes: ${{ matrix.backend == 'python' && 180 || 120 }}
     strategy:
       fail-fast: false
       matrix:
-        backend: [v8, spidermonkey]
+        # `generate` is what has to be built before any file in the database
+        # will parse - see the step that builds it.
+        include:
+          - backend: v8
+            generate: tests/generated/unibind_test_capabilities.h
+          - backend: spidermonkey
+            generate: tests/generated/unibind_test_capabilities.h
+          - backend: python
+            generate: ''
     steps:
       - uses: actions/checkout@v4
 
@@ -148,18 +181,67 @@ jobs:
           }
           "all understood"
 
+      # CPython only, from here to the save: vcpkg's binary cache, as the
+      # `python-suite` job in engines.yml keeps it and under the key its x64
+      # jobs use - see the header. VCPKG_BINARY_SOURCES goes into the job's
+      # environment from here rather than at the job's top, so that the V8 and
+      # SpiderMonkey jobs configure exactly as they did before this backend
+      # existed.
+      - name: Point vcpkg's binary cache at the workspace
+        if: matrix.backend == 'python'
+        run: |
+          New-Item -ItemType Directory -Force -Path "${{ github.workspace }}\vcpkg-archives" | Out-Null
+          "VCPKG_BINARY_SOURCES=clear;files,${{ github.workspace }}\vcpkg-archives,readwrite" |
+              Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # The triplet is the tidy preset's, spelled out because a preset's cache
+      # variables are not visible to an expression here.
+      - name: Restore vcpkg's binary cache
+        if: matrix.backend == 'python'
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: vcpkg-archives
+          key: vcpkg-python-x64-windows-static-${{ hashFiles('vcpkg.json', 'cmake/vcpkg-ports/**') }}
+          restore-keys: |
+            vcpkg-python-x64-windows-static-
+
       # The preset reads VCPKG_ROOT; the runner calls it VCPKG_INSTALLATION_ROOT.
+      # For python this is also what builds CPython: the root CMakeLists.txt
+      # turns on the manifest's `python` feature and the vcpkg toolchain
+      # installs it before the project is generated.
       - name: Configure the compile database, which fetches the engine
+        id: configure
         run: |
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
           cmake --preset tidy-${{ matrix.backend }}
 
-      # Not a build of anything that runs: the suite includes a header the build
-      # generates by asking the backend library which operations it defines, so
-      # that one header - and the backend it is read from - has to exist before
-      # any test file will parse.
-      - name: Generate the header the suite is compiled against
-        run: cmake --build build/tidy-${{ matrix.backend }} --target tests/generated/unibind_test_capabilities.h
+      # As soon as the packages are installed, and even if tidy then fails: a
+      # finding should not cost the next run the CPython build. Not after a
+      # failed configure, whose partial archive under the final key would keep
+      # a complete one from ever being saved there.
+      - name: Save vcpkg's binary cache
+        if: always() && matrix.backend == 'python' && steps.configure.outcome == 'success' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: vcpkg-archives
+          key: vcpkg-python-x64-windows-static-${{ hashFiles('vcpkg.json', 'cmake/vcpkg-ports/**') }}
+
+      # Not a build of anything that runs: what has to exist before the files
+      # in the database will parse, per backend (`generate` in the matrix).
+      #
+      #   * V8 and SpiderMonkey: the shared suite includes a header the build
+      #     generates by asking the backend library which operations it
+      #     defines, so that one header - and the backend it is read from - is
+      #     built first.
+      #   * CPython: nothing. Its suite does not use that header (it is not the
+      #     shared suite), `config.h` is written at configure time, and the one
+      #     generated source, the frozen standard library, is not in the
+      #     database at all. Building it here would spend the time it takes to
+      #     compile the whole standard library to bytecode nothing linted reads.
+      - name: Generate what the linted files are compiled against
+        if: matrix.generate != ''
+        run: cmake --build build/tidy-${{ matrix.backend }} --target ${{ matrix.generate }}
 
       - name: clang-tidy
         run: |
