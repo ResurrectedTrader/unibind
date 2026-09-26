@@ -82,6 +82,11 @@ list(APPEND PATCHES 0102-asyncio-proactor-in-subinterpreters.patch)
 # asked first, then shared - reference counts and all - by every interpreter on every thread,
 # and used after the first one ended. Make them on every call instead.
 list(APPEND PATCHES 0104-ssl-no-shared-static-strings.patch)
+# unibind: in a debug build CPython keeps 4096 pointers of stack between its soft and hard
+# recursion limits, and MSVC's unoptimised evaluation loop spends more than that between two
+# checks, so a runaway recursion could step over the soft limit into a fatal error. Four times
+# the margin for a debug build on Windows. (Release keeps upstream's.)
+list(APPEND PATCHES 0105-debug-stack-margin-on-windows.patch)
 
 # unibind: on Windows a static core cannot load a .pyd (every one links python3X.dll), so the
 # extension modules are compiled into the static library instead, as built-in modules. Each one

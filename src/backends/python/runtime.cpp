@@ -765,6 +765,7 @@ PyMethodDef quietHandlerDef = {"_quiet_exception_handler", &QuietExceptionHandle
 
 constexpr const char* RUNTIME_SOURCE = R"PY(
 import asyncio as _asyncio
+import asyncio.events as _events
 import weakref as _weakref
 
 # Futures locked in to another awaitable: resolved, not yet settled, as a
@@ -778,11 +779,14 @@ import threading as _threading
 # after which `get_event_loop()`, `Future()` and `ensure_future()` in the next
 # script would raise "There is no current event loop". So the policy falls back
 # to the isolate's loop, on the isolate's thread, whenever none is set: a
-# script that sets one of its own still gets that one.
+# script that sets one of its own still gets that one. Through asyncio's
+# private `_get_event_loop_policy`/`_set_event_loop_policy`, which asyncio
+# itself uses: the public pair warns from 3.14, for the policy system's
+# removal in 3.16.
 _isolate_loop = None
 _isolate_thread = None
 
-class _Policy(type(_asyncio.get_event_loop_policy())):
+class _Policy(type(_events._get_event_loop_policy())):
     def get_event_loop(self):
         loop = _isolate_loop
         if (self._local._loop is None and loop is not None and not loop.is_closed()
@@ -794,7 +798,7 @@ def new_loop(quiet):
     global _isolate_loop, _isolate_thread
     loop = _asyncio.SelectorEventLoop()
     loop.set_exception_handler(quiet)
-    _asyncio.set_event_loop_policy(_Policy())
+    _events._set_event_loop_policy(_Policy())
     _asyncio.set_event_loop(loop)
     _isolate_loop = loop
     _isolate_thread = _threading.get_ident()
@@ -1072,11 +1076,6 @@ void DiscardReady(RuntimeState& runtime) noexcept {
 // Stack
 // ---------------------------------------------------------------------------
 
-/// Kept free below the floor, for CPython to build and raise the
-/// `RecursionError` in, and for whatever catches it. A thread's stack ends in
-/// a guard page and, past it, the process; this is the room before that.
-constexpr std::size_t STACK_HEADROOM = 128 * 1024;
-
 /// CPython 3.14 guards native recursion by address: every entry into its
 /// evaluation loop, and every C-level recursion (a `repr` of a nested object, a
 /// call through `tp_call`), compares the stack pointer with the thread state's
@@ -1087,17 +1086,23 @@ constexpr std::size_t STACK_HEADROOM = 128 * 1024;
 /// thread's own stack end; `PyUnstable_ThreadState_SetStackProtection` moves
 /// it, and this is how an isolate's budget becomes CPython's limit.
 ///
-/// The margin is `_PyOS_STACK_MARGIN_BYTES` in Include/internal/pycore_pythonrun.h
-/// - 2048 pointers, 4096 in a debug CPython, whose unoptimised evaluation loop
-/// needs more between two checks. It is not in a public header, so it is
-/// repeated here; the base is put two margins below the floor, which makes the
-/// soft limit the floor itself.
+/// The margin is `_PyOS_STACK_MARGIN_BYTES` in Include/internal/pycore_pythonrun.h:
+/// 2048 pointers, and in a debug CPython 64 KB - the overlay port's patch 0105,
+/// because MSVC's unoptimised evaluation loop spends up to about 58 KB between
+/// two checks, more than upstream's 4096 pointers allow for. It is not in a
+/// public header, so it is repeated here; the base is put two margins below
+/// the floor, which makes the soft limit the floor itself.
 #if defined(Py_DEBUG)
-constexpr std::size_t CPYTHON_STACK_MARGIN = std::size_t{4096} * sizeof(void*);
+constexpr std::size_t CPYTHON_STACK_MARGIN = std::size_t{64} * 1024;
 #else
 constexpr std::size_t CPYTHON_STACK_MARGIN = std::size_t{2048} * sizeof(void*);
 #endif
-static_assert(2 * CPYTHON_STACK_MARGIN <= STACK_HEADROOM, "CPython's margins fit in the headroom below the floor");
+
+/// Kept free below the floor: CPython's two margins, which its base sits under,
+/// and 64 KB past them for whatever a native does on the way out. A thread's
+/// stack ends in a guard page and, past it, the process; this is the room
+/// before that. 128 KB in a release build, 192 KB in a debug one.
+constexpr std::size_t STACK_HEADROOM = std::max<std::size_t>(128 * 1024, 2 * CPYTHON_STACK_MARGIN + 64 * 1024);
 
 /// Native recursion - a callback calling back into the engine, through Python
 /// or not - is held at the same floor by every native entry: each asks
@@ -1228,14 +1233,13 @@ bool IsolateRuntimeSetup(Isolate& isolate, const IsolateOptions& options) noexce
     // in a `RecursionError` there. Python-to-Python calls cost no native stack
     // and are held by the separate `sys.getrecursionlimit()`, which is left as
     // it is. The region runs from two margins below the floor to the top of
-    // the thread's stack; the call refuses only a region smaller than three
-    // margins, which this never is.
+    // the thread's stack. The call refuses a region smaller than three
+    // margins; the top is only what CPython reports "used" against, so a
+    // region that would be smaller - a small stackLimitBytes near the top of
+    // a fresh thread - is reported as three margins.
     const std::uintptr_t base = runtime->stackFloor - 2 * CPYTHON_STACK_MARGIN;
-    if (PyUnstable_ThreadState_SetStackProtection(isolate.impl().tstate, reinterpret_cast<void*>(base),
-                                                  static_cast<std::size_t>(high - base)) != 0) {
-        return false;
-    }
-    return true;
+    const std::size_t region = std::max<std::size_t>(high - base, 3 * CPYTHON_STACK_MARGIN);
+    return PyUnstable_ThreadState_SetStackProtection(isolate.impl().tstate, reinterpret_cast<void*>(base), region) == 0;
 }
 
 void IsolateRuntimeTeardown(Isolate& isolate) noexcept {
