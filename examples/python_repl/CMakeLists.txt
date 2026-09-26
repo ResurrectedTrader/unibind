@@ -105,3 +105,18 @@ set_tests_properties(example.python_repl.session PROPERTIES
     PASS_REGULAR_EXPRESSION "${session_pattern}"
     # :quit ends the session; the line after it must never be evaluated.
     FAIL_REGULAR_EXPRESSION "never evaluated")
+
+# The standard library is embedded (UNIBIND_PYTHON_EMBED_STDLIB): the REPL,
+# copied alone into an empty directory with UNIBIND_PYTHON_HOME unset, still has
+# all of it - served from the program itself, with nothing on sys.path.
+if(UNIBIND_PYTHON_EMBED_STDLIB)
+    add_test(NAME example.python_repl.runs-alone-from-an-empty-directory
+             COMMAND "${CMAKE_COMMAND}"
+                     "-DEXE=$<TARGET_FILE:unibind_python_repl>"
+                     "-DDIR=${CMAKE_CURRENT_BINARY_DIR}/standalone/$<CONFIG>"
+                     "-DARGS=${data}/standalone.py"
+                     -P "${PROJECT_SOURCE_DIR}/tests/python/standalone.cmake")
+    set_tests_properties(example.python_repl.runs-alone-from-an-empty-directory PROPERTIES
+        LABELS "example" TIMEOUT 60
+        PASS_REGULAR_EXPRESSION "stdlib: frozen [[][]] ran standalone.*exit code: 0")
+endif()

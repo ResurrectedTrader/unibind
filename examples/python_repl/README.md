@@ -50,21 +50,32 @@ waits for its event loop.
 
 ## The standard library
 
-CPython is linked statically, but its pure-Python standard library (`Lib/`,
-which has `os.py`, `codeop.py`, `asyncio/` and the rest) is read from disk at
-start-up. The backend looks in these places, in order (`FindStandardLibrary` in
-`src/backends/python/core.cpp`), and uses the first one that holds `os.py`:
+CPython is linked statically, and so is its pure-Python standard library
+(`Lib/`, which has `os.py`, `codeop.py`, `asyncio/` and the rest): the build
+compiles it into the backend as frozen modules. `unibind_python_repl.exe` is the
+whole program - copy it anywhere, alone, and it runs
+(`example.python_repl.runs-alone-from-an-empty-directory` does exactly that).
+
+A directory on disk still wins when there is one - the backend takes the first
+of these that holds `os.py` (`FindStandardLibraryDirectory` in
+`src/backends/python/core.cpp`), and the embedded standard library only when
+neither does:
 
 1. `UNIBIND_PYTHON_HOME`: that directory, or its `Lib` subdirectory;
-2. a `python-stdlib` directory next to the executable;
-3. the path the build found it at, which is vcpkg's
-   `build/python-x64/vcpkg_installed/x64-windows-static/tools/python3/Lib`.
+2. a `python-stdlib` directory next to the executable.
 
-Run from the build tree, the third one is always there. To ship the program
-somewhere else, copy that `Lib` directory next to it as `python-stdlib`. If none
-of them holds `os.py`, the program prints a message and exits 1.
+Pointing `UNIBIND_PYTHON_HOME` at vcpkg's
+`build/python-x64/vcpkg_installed/x64-windows-static/tools/python3/Lib` gives
+tracebacks into the standard library their source lines back, which frozen code
+has none of. `json.__spec__.origin` at the prompt says which one is in use:
+`'frozen'`, or a path.
+
+Built with `-DUNIBIND_PYTHON_EMBED_STDLIB=OFF`, the REPL reads `Lib/` from disk
+instead, looks last in the path the build found it at, and prints a message and
+exits 1 if none of the three holds `os.py`.
 [`docs/python.md`](../../docs/python.md) section 10 has the rest: what an
-isolate refuses to import, and what shipping the standard library involves.
+isolate refuses to import, and what embedding the standard library costs and
+leaves out.
 
 ## A session
 
@@ -189,3 +200,4 @@ itself. A native that blocks without polling runs until it returns.
 | `example.python_repl.script-that-raises` (+ `-prints-a-traceback`) | exit code 1, and the traceback names the file and the function |
 | `example.python_repl.timeout-stops-a-runaway-loop` | `--timeout 1 -c "while True: pass"` is stopped and exits 1 |
 | `example.python_repl.session` | [`tests/session.txt`](tests/session.txt) piped in; the transcript's lines must appear in order |
+| `example.python_repl.runs-alone-from-an-empty-directory` | the REPL copied alone into an empty directory, `UNIBIND_PYTHON_HOME` unset, runs [`tests/standalone.py`](tests/standalone.py): `asyncio`, `json`, `sqlite3`, `ssl` and `email` from the embedded standard library, with `sys.path` empty |

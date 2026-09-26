@@ -11,6 +11,7 @@
 #include <string>
 
 #include "internal.h"
+#include "stdlib_frozen.h"
 
 namespace ub {
 
@@ -44,10 +45,32 @@ PlatformState gPlatform;
 
 thread_local Isolate* tCurrentIsolate = nullptr;
 
-/// Where the pure-Python standard library is: `UNIBIND_PYTHON_HOME`, then a
-/// `python-stdlib` directory beside the program, then where it was when the
-/// backend was built. The first one that holds `os.py` wins.
-std::wstring FindStandardLibrary() {
+/// The directory the running program is in, or empty if it cannot be told.
+std::filesystem::path ExecutableDirectory() {
+    std::wstring path(MAX_PATH, L'\0');
+    for (;;) {
+        const DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+        if (length == 0) {
+            return {};
+        }
+        if (length < path.size()) {
+            path.resize(length);
+            return std::filesystem::path(path).parent_path();
+        }
+        path.resize(path.size() * 2);
+    }
+}
+
+/// A directory holding the pure-Python standard library, when one is given:
+/// `UNIBIND_PYTHON_HOME` (that directory or its `Lib`), then a `python-stdlib`
+/// directory beside the program. The first that holds `os.py` wins. Either one
+/// overrides the embedded standard library, so a developer can run against
+/// sources on disk; without either, the embedded one is used.
+///
+/// A backend built without the embedded standard library
+/// (UNIBIND_PYTHON_EMBED_STDLIB off) looks in one more place, last: where it
+/// was when the backend was built.
+std::wstring FindStandardLibraryDirectory() {
     namespace fs = std::filesystem;
     std::error_code ec;
     const auto holds = [&ec](const fs::path& dir) { return !dir.empty() && fs::exists(dir / L"os.py", ec); };
@@ -65,19 +88,17 @@ std::wstring FindStandardLibrary() {
         }
     }
 
-    wchar_t exe[MAX_PATH];
-    const DWORD length = GetModuleFileNameW(nullptr, exe, MAX_PATH);
-    if (length > 0 && length < MAX_PATH) {
-        const fs::path beside = fs::path(exe).parent_path() / L"python-stdlib";
-        if (holds(beside)) {
-            return beside.wstring();
-        }
+    const fs::path exe = ExecutableDirectory();
+    if (!exe.empty() && holds(exe / L"python-stdlib")) {
+        return (exe / L"python-stdlib").wstring();
     }
 
+#if defined(UNIBIND_PYTHON_DEFAULT_STDLIB)
     const fs::path baked(UNIBIND_PYTHON_DEFAULT_STDLIB);
     if (holds(baked)) {
         return baked.wstring();
     }
+#endif
     return {};
 }
 
@@ -106,10 +127,18 @@ Platform::Platform(const PlatformOptions& options) {
         return;
     }
 
-    const std::wstring stdlib = FindStandardLibrary();
+    // A directory on disk if one was given, and the embedded standard library
+    // otherwise. The frozen-module table is installed only in the second case:
+    // CPython consults it before `sys.path`, so with it in place a directory
+    // would never be read.
+    const std::wstring stdlib = FindStandardLibraryDirectory();
     if (stdlib.empty()) {
+#if defined(UNIBIND_PYTHON_EMBED_STDLIB)
+        PyImport_FrozenModules = detail::frozen_stdlib::kTable.modules;
+#else
         ReportPlatformFault(EngineFault::Fatal, "the Python standard library could not be found");
         return;
+#endif
     }
 
     PyConfig config;
@@ -125,10 +154,20 @@ Platform::Platform(const PlatformOptions& options) {
     config.pathconfig_warnings = 0;
     config.module_search_paths_set = 1;
 
-    const std::filesystem::path lib(stdlib);
-    PyStatus status = PyConfig_SetString(&config, &config.home, lib.parent_path().c_str());
-    if (!PyStatus_Exception(status)) {
-        status = PyWideStringList_Append(&config.module_search_paths, stdlib.c_str());
+    // `home` is what `sys.prefix` says. From a directory it is the directory's
+    // parent, as for an installed CPython, and `sys.path` is the directory. With
+    // the standard library embedded it is the program's own directory, and
+    // `sys.path` is empty: nothing is read from disk, and nothing on disk is
+    // looked for.
+    PyStatus status = PyStatus_Ok();
+    if (!stdlib.empty()) {
+        const std::filesystem::path lib(stdlib);
+        status = PyConfig_SetString(&config, &config.home, lib.parent_path().c_str());
+        if (!PyStatus_Exception(status)) {
+            status = PyWideStringList_Append(&config.module_search_paths, stdlib.c_str());
+        }
+    } else if (const std::filesystem::path exe = ExecutableDirectory(); !exe.empty()) {
+        status = PyConfig_SetString(&config, &config.home, exe.c_str());
     }
     if (!PyStatus_Exception(status)) {
         status = PyConfig_SetString(&config, &config.program_name, L"unibind");

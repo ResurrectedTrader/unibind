@@ -41,7 +41,7 @@ reports a skip where making one asked the allocator for nothing it could refuse.
 - CPython 3.12.13: `src/backends/python/`, and `docs/python.md` for the notes.
   It defines every entry point decisions 1-29 declare, `SetHeapLimitCallback`
   included; `Inspector::Supported()` is false there, as on SpiderMonkey, and
-  `unibind/interop/v8.h` is V8's alone. Its own suite is 261 cases, all green.
+  `unibind/interop/v8.h` is V8's alone. Its own suite is 269 cases, all green.
   Decisions 30-37 are what a second *language* behind the API needed, and not
   one of them changed a public header.
 
@@ -956,7 +956,7 @@ embedder whose policy changes changes it behind the fixed handler, through
 | kind | V8 | SpiderMonkey | CPython |
 |---|---|---|---|
 | `OutOfMemory` | `Isolate::SetOOMErrorHandler`, plus the library's own frame exhaustion | `JS::SetOutOfMemoryCallback`, which every internal out-of-memory funnels through - frame exhaustion included, because the backend already reports that one through `JS_ReportOutOfMemory` | the backend's own allocator hooks refusing an allocation at `heapLimitBytes` (decision 37), once per crossing |
-| `Fatal` | `Isolate::SetFatalErrorHandler`, `V8::SetFatalErrorHandler`, and `V8::SetDcheckErrorHandler` | `MOZ_CRASH` (so every `MOZ_RELEASE_ASSERT`, and a debug engine's `MOZ_ASSERT`), recognised by a vectored exception handler | a failed bring-up only - no standard library, or `Py_InitializeFromConfig` failing - and the process is not ended: the `Platform` is left uninitialised. `Py_FatalError` is not hooked |
+| `Fatal` | `Isolate::SetFatalErrorHandler`, `V8::SetFatalErrorHandler`, and `V8::SetDcheckErrorHandler` | `MOZ_CRASH` (so every `MOZ_RELEASE_ASSERT`, and a debug engine's `MOZ_ASSERT`), recognised by a vectored exception handler | a failed bring-up only - no standard library (possible only with it not embedded), or `Py_InitializeFromConfig` failing - and the process is not ended: the `Platform` is left uninitialised. `Py_FatalError` is not hooked |
 
 SpiderMonkey's fatal path has no embedder hook, but it does not have to have one.
 `mozilla/Assertions.h` fixes what `MOZ_CRASH` does on Windows - store the reason

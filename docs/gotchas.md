@@ -16,7 +16,7 @@ way in.
 
 ## The ones you will not diagnose from the symptom
 
-Seventeen of these give a wrong answer and no error at all. The eighteenth gives
+Eighteen of these give a wrong answer and no error at all. The nineteenth gives
 an error that blames something else entirely, which is the same problem wearing
 a disguise.
 
@@ -39,6 +39,7 @@ a disguise.
 | A native's `SetNull()` that a script's `is None` misses (CPython) | [`None` is `undefined`, and `null` is something else](#none-is-undefined-and-null-is-something-else) |
 | One realm's monkey-patch showing up in another (CPython) | [Realms of one isolate share their modules](#realms-of-one-isolate-share-their-modules) |
 | A script's background thread that gets nothing done (CPython) | [A thread the script started dies with its isolate, and runs only while script does](#a-thread-the-script-started-dies-with-its-isolate-and-runs-only-while-script-does) |
+| Standard-library modules from another version, on one machine only (CPython) | [A standard library directory on the machine replaces the embedded one](#a-standard-library-directory-on-the-machine-replaces-the-embedded-one) |
 | A test case that passes without running | [A test case's name may not contain `;`](#a-test-cases-name-may-not-contain-) |
 
 ---
@@ -999,16 +1000,35 @@ an isolate. A script that patches `json.dumps` or sets `builtins.x` has done it
 for its neighbours. Two sandboxes that must not see each other's module state are
 two isolates, on two threads.
 
-### The program runs on the machine that built it, and nowhere else
+### A standard library directory on the machine replaces the embedded one
 
-**Loud, but a long way from its cause.** CPython is linked in; its pure-Python
-standard library is read from disk when the `Platform` is made, from
+**Silent until it is the wrong one.** The pure-Python standard library is
+compiled into the backend (`UNIBIND_PYTHON_EMBED_STDLIB`, on by default), and a
+program needs nothing beside it. But a directory still wins when there is one:
+`UNIBIND_PYTHON_HOME`, then a `python-stdlib` directory beside the executable -
+any directory holding an `os.py`. That is there so a developer can run against
+sources, and it is taken on a user's machine just the same: an
+`UNIBIND_PYTHON_HOME` left pointing at another CPython's `Lib` gives the program
+modules written for another version, with errors far from their cause. A module's
+`__spec__.origin` says which one it got: `"frozen"` for the embedded one, a path
+for a directory ([`docs/python.md`](python.md) section 10.3).
+
+Two smaller things follow from the modules being frozen. A traceback into the
+standard library shows `File "<frozen json.decoder>", line 354` without the
+line's text, and `inspect.getsource` of a standard-library function raises
+`OSError`; point `UNIBIND_PYTHON_HOME` at `Lib` while debugging to get both back.
+
+### Built without the embedded standard library, the program runs only where it was built
+
+**Loud, but a long way from its cause.** With `UNIBIND_PYTHON_EMBED_STDLIB`
+off, the standard library is read from disk when the `Platform` is made, from
 `UNIBIND_PYTHON_HOME`, then a `python-stdlib` directory beside the executable,
 then the path the build found it at - which is inside the build tree. The last
 one is why everything works until the program is copied somewhere else, where
 `Platform` reports `EngineFault::Fatal` ("the Python standard library could not be
 found"), `IsInitialized()` is false and every `Isolate::New` is null. Ship
-`tools/python3/Lib` beside the program as `python-stdlib`.
+`tools/python3/Lib` beside the program as `python-stdlib` - or leave the option
+on.
 
 ### Some of the standard library is refused, and some is quietly slower
 
@@ -1024,8 +1044,9 @@ through their pure-Python twins, and are correspondingly slower. The list is in
 
 **Loud.** The engine is a static library, and a `.pyd` links `python3X.dll`,
 which does not exist in the process. Pure-Python packages work from wherever the
-embedder puts them on `sys.path` - which is the standard library and nothing else
-to begin with: no `site-packages`, no `PYTHONPATH`, no current directory.
+embedder puts them on `sys.path` - which is empty to begin with when the standard
+library is embedded, and that one directory when it is read from disk: no
+`site-packages`, no `PYTHONPATH`, no current directory.
 
 ### A long-running builtin cannot be stopped
 
@@ -1104,7 +1125,7 @@ on the *type*, never on an instance or its prototype, so an `asyncIterator`
 method does not make `async for` work (`TypeError`) and a `hasInstance` method is
 ignored by `isinstance`.
 
-### Every isolate costs about 9.5 MB the process never gets back
+### Every isolate costs about 9 MB the process never gets back
 
 **Silent growth.** CPython 3.12 does not free a sub-interpreter's arenas when it
 ends. An embedding that makes an isolate per request grows by that much per
@@ -1128,7 +1149,7 @@ host process, or contain the process with the operating system.
 
 ### A 32-bit program runs out of address space after a few hundred isolates
 
-**Silent, then everything crawls.** Every isolate keeps about 9.5 MB for good
+**Silent, then everything crawls.** Every isolate keeps about 9 MB for good
 (above), and an x86 process has 2 GB by default: the suite's x86 executable got
 into trouble after about 190 isolates, with allocations slowing and threads
 failing to start rather than a clean error. Link with `/LARGEADDRESSAWARE`, and

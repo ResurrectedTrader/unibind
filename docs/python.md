@@ -27,7 +27,7 @@ The short answer, in three parts:
 
 The shared suite in `tests/cases/` is written in JavaScript source as much as in
 C++, so it does not run here and the parity comparison does not include this
-backend. It has a suite of its own - `tests/python/`, 261 cases - written the
+backend. It has a suite of its own - `tests/python/`, 269 cases - written the
 same way: against `ub::` only, with Python as the script language. Every
 behaviour below that a test pins names the test.
 
@@ -1077,7 +1077,8 @@ same script name, and nothing it could replace.
 - **`unibind/interop/v8.h`** is V8's alone; a call to it does not link.
 - **`SharedArrayBuffer`**: nothing in Python is one, so no view is over one.
 - **`EngineFault::Fatal` is raised only at bring-up** - the standard library not
-  found, or `Py_InitializeFromConfig` failing - and there it does **not** end the
+  found (possible only with it not embedded, section 10.3), or
+  `Py_InitializeFromConfig` failing - and there it does **not** end the
   process: the `Platform` is left existing and not initialised, and every
   `Isolate::New` answers null, as decision 11 says of a platform that failed to
   bring its engine up. A fatal error inside CPython later - `Py_FatalError` - is
@@ -1134,42 +1135,151 @@ runs. Everything works in the main interpreter, which never runs a script.
 
 `zoneinfo` works, but Windows has no tz database: `ZoneInfo('Europe/London')`
 needs the `tzdata` package on `sys.path`. `ssl` finds the Windows certificate
-stores by itself.
+stores by itself - but not safely from several isolates at once. `_ssl.c` (3.12,
+and 3.14 still) caches the two encoding names `enum_certificates` returns (`certEncodingType`) in
+C `static` variables: one `str` made by whichever interpreter got there first
+and reference-counted by every other under GILs of their own. Six isolates on six
+threads each calling `ssl.create_default_context()` - which reads the stores -
+crashed with `STATUS_HEAP_CORRUPTION` in most runs with the standard library read
+from disk; with it embedded, forty runs did not, which is timing, not a fix.
+Nothing in the backend or the overlay port changes this yet: make the first
+default context before starting isolates on other threads, or keep certificate
+loading to one isolate.
 
 ### 10.3 Where the standard library comes from
 
-The C half of CPython is linked in; the pure-Python half - `Lib/`, with `os.py`,
-`asyncio/`, `json/` and the rest - is **read from disk when the `Platform` is
-made**. `FindStandardLibrary` in `core.cpp` takes the first of these that holds
-`os.py`:
+The C half of CPython is linked in, and by default so is the pure-Python half -
+`Lib/`, with `os.py`, `asyncio/`, `json/` and the rest. **A program ships as one
+executable, with nothing beside it.**
+
+**How it is embedded.** With `UNIBIND_PYTHON_EMBED_STDLIB` on (the default), the
+build runs `src/backends/python/freeze_stdlib.py` with the engine prefix's own
+interpreter, `tools/python3/python.exe` - the same CPython as the library, so the
+bytecode and the marshal format are the ones it reads. Configure checks the
+version, and the generated source `static_assert`s it. The script compiles every
+module of `tools/python3/Lib` the exclusion list leaves in, `marshal`s each code
+object, and writes the bytes end to end into one file, which a generated C++
+source `#embed`s and indexes as CPython's own frozen-module table - one
+`struct _frozen` per module: name, code, size, whether it is a package. That
+source is part of `unibind_backend_python.lib`, so a program gets the standard
+library by linking the backend, from the build tree or from an installed prefix
+alike. It is regenerated when a file under `Lib`, the script, the interpreter or
+one of the options below changes.
+
+When the `Platform` is made with no directory given (below), it points
+`PyImport_FrozenModules` at that table before `Py_InitializeFromConfig`.
+CPython's `FrozenImporter` sits ahead of the path finder on `sys.meta_path` and
+serves every standard-library `import` from it, including the ones CPython makes
+while it starts (`encodings`, `io`, ...). CPython looks in the table after its
+own bootstrap modules (`importlib._bootstrap`, `_bootstrap_external`,
+`zipimport`) and before its own frozen copies of `os`, `codecs` and the other
+start-up modules, so those come from the table too; `use_frozen_modules` gates
+only CPython's copies. Each interpreter unmarshals a module the first time it
+imports it, into code objects of its own, from the one read-only copy of the
+bytes in the image - which is what makes it safe for own-GIL isolates on many
+threads at once (`stdlib embedded: isolates on many threads unmarshal the same
+table at once`).
+
+**What a frozen module looks like.** `__spec__.origin` is `"frozen"` and
+`__loader__` is `FrozenImporter`; there is no `__file__`, and a package's
+`__path__` is `[]` - its submodules are found by name in the table, not by
+searching a directory. This is what CPython's own frozen `os` has in any
+embedding that does not tell it where its standard library is, and the standard
+library is written for it: `logging`, `importlib`, `inspect` and the rest check
+for a missing `__file__`. Every module in the table was imported in an isolate
+both ways, embedded and from disk, and the same 36 failed both ways - the ones
+section 10.2 lists and the ones that need a POSIX-only module (`curses`, `pty`,
+`tty`, `dbm.gnu`, ...). `sys.path` is empty; `sys.prefix` and `sys.exec_prefix`
+are the program's directory; nothing on disk is read for an `import`, and nothing
+is written.
+
+**A traceback** into the standard library names CPython's own file name for
+frozen code, and the line, without the line's text - there is no source to read
+it from (`stdlib embedded: a traceback into the standard library names the
+module and the line`):
+
+```
+  File "<frozen json.decoder>", line 354, in raw_decode
+json.decoder.JSONDecodeError: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)
+```
+
+`inspect.getsource` of a standard-library function raises `OSError`, as it does
+for CPython's own frozen modules. The sources would be about 9 MB more (2 MB
+compressed) for something a developer can have by pointing `UNIBIND_PYTHON_HOME`
+at `Lib`, so they are not embedded.
+
+**What is left out**, by `UNIBIND_PYTHON_EMBED_STDLIB_EXCLUDE` - dotted module
+names, each with everything under it: `test` (CPython's own test suite, 31 MB of
+the 46 MB), `idlelib`, `tkinter`, `turtle` and `turtledemo` (no Tk here),
+`ensurepip` and `venv` (nothing to install into), `lib2to3`, and `pydoc_data`
+(the topic text behind `pydoc.help('if')`, which then says it is not available).
+`site-packages` and `__pycache__` are never walked - neither is a package name -
+and neither is a directory without an `__init__.py`. What remains is 514
+modules, **9.1 MB of marshalled code** (CPython 3.12, x64).
+
+`UNIBIND_PYTHON_EMBED_STDLIB_OPTIMIZE` is `compile()`'s `optimize`: 0, the
+default, keeps asserts and docstrings, as the interpreter runs everything else;
+2 drops both, for 7.7 MB. Debug and Release embed the same bytes: a `Py_DEBUG`
+CPython reads a release build's bytecode (the two share `.pyc` files), and both
+run at optimization level 0. On x86 the interpreter that compiles it is the x86
+one, which runs on an x64 host.
+
+**Data files.** Nothing the standard library imports needs one: outside the
+excluded packages `Lib` holds no file but `.py` ones except four notes and
+scripts in `ctypes/macholib` and `email`, and the modules
+that use `__file__` or `importlib.resources` (`pydoc`, `doctest`, `unittest`'s
+discovery, `trace`, `zoneinfo` for the separate `tzdata` package) do so for the
+caller's files, not their own. `importlib.resources.files()` of a
+standard-library package has nothing in it, and
+`pkgutil.iter_modules(json.__path__)` lists nothing.
+
+**What it costs and saves**, measured on x64 Release:
+
+| | from disk | embedded |
+|---|---|---|
+| `unibind_python_repl.exe` | 16.4 MB | 26.0 MB (+9.6 MB) |
+| a new isolate that imports `json`, `re`, `dataclasses` and `typing` (median; `stdlib embedded: isolate start-up, measured`) | about 300 ms | about 45 ms |
+| the REPL running `-c pass`, from process start to exit | about 380 ms | about 130 ms |
+| process memory kept per isolate made and destroyed (section 11) | 9.7 MB | 8.6 MB |
+
+From disk, every isolate compiled every module it imported from source - no
+`.pyc` comes with vcpkg's `Lib`, and none is written - and `asyncio`, which every
+isolate imports for its loop, is the bulk of it. Embedded, it unmarshals
+bytecode instead. The bytes themselves are in the image, shared by every isolate
+and paged in as they are read.
+
+**A directory still wins**, so a developer can run against sources on disk, with
+line text in tracebacks. `FindStandardLibraryDirectory` in `core.cpp` takes the
+first of these that holds `os.py`:
 
 1. **`UNIBIND_PYTHON_HOME`**, an environment variable: that directory, or its
    `Lib` subdirectory;
 2. **`python-stdlib`**, a directory beside the running executable;
-3. **the path the build found it at** - vcpkg's
-   `<build>/vcpkg_installed/<triplet>/tools/python3/Lib` - compiled into the
-   backend as `UNIBIND_PYTHON_DEFAULT_STDLIB`.
+3. **the embedded standard library** - no directory at all.
 
-`sys.path` is that one directory and nothing else: no `site-packages`, no current
-directory, nothing from the environment.
+With a directory, the frozen table is not installed, `sys.path` is that one
+directory and `sys.prefix` its parent: everything is as it was before the
+standard library was embedded. `python.stdlib-embedded.unibind-python-home-still-wins`
+runs the `stdlib embedded` cases that way. In either case there is no
+`site-packages`, no current directory and nothing from the environment on
+`sys.path`.
 
-If none of them has it, the `Platform` reports `EngineFault::Fatal` ("the Python
-standard library could not be found") and is not initialised. Run from the build
-tree the third is always there, which is why a program works on the machine that
-built it and fails on the next one.
+**Built with `UNIBIND_PYTHON_EMBED_STDLIB` off**, nothing is embedded and the
+backend reads `Lib` from disk, with a third place to look, last: **the path the
+build found it at** - `<build>/vcpkg_installed/<triplet>/tools/python3/Lib`,
+compiled in as `UNIBIND_PYTHON_DEFAULT_STDLIB` - which is why such a program
+works on the machine that built it and fails on the next one. If none of the
+three holds it, the `Platform` reports `EngineFault::Fatal` ("the Python
+standard library could not be found") and is not initialised. Shipping such a
+program means copying `tools/python3/Lib` beside it as `python-stdlib`, or
+pointing `UNIBIND_PYTHON_HOME` at a copy. A backend with the standard library
+embedded never looks at the build-tree path: a program that works only on the
+machine that built it is the failure embedding exists to end, and the embedded
+copy is the same `Lib`.
 
-**Shipping a program therefore means shipping `Lib/`** - copy
-`tools/python3/Lib` beside the executable as `python-stdlib`, or point
-`UNIBIND_PYTHON_HOME` at a copy. It is 46 MB as vcpkg installs it, 31 MB of which
-is CPython's own test suite (`Lib/test`), which nothing here imports. No `.pyc`
-files come with it and none are written (`write_bytecode` is off), so every
-isolate compiles each module it imports from source; the example REPL, which
-imports about 150, starts in under half a second.
-
-The same applies to a prefix installed from a python build: it names the vcpkg
-prefix it was built against - by default inside the build tree - for the engine's
-libraries, as a V8 prefix names `dependencies/`, and the backend library it
-installs still carries the build tree's `Lib` path as its last resort.
+Embedding needs the prefix's `tools/python3/python.exe`. A `UNIBIND_PYTHON_DIR`
+without one stops at configure and says so, rather than compiling with whatever
+other Python is at hand; turn the option off for such a prefix.
 
 ### 10.4 Linking
 
@@ -1203,9 +1313,10 @@ decides how an embedding is shaped:
 - **An isolate costs the process memory it never gets back.** CPython 3.12 does
   not free a sub-interpreter's object arenas when it ends - 3.13 does. Measured by
   `lifetime: many isolates in sequence and on many threads leak nothing of this
-  area's`: about **9.5 MB of process memory kept per isolate** made and destroyed,
+  area's`: about **8.6 MB of process memory kept per isolate** made and destroyed,
   the same with the allocator hooks off, and most of it asyncio, which every
-  isolate imports for its loop. Of the backend's own C++ allocations, one small
+  isolate imports for its loop - 9.7 MB with the standard library read from disk
+  (section 10.3), which compiles every module from source. Of the backend's own C++ allocations, one small
   one per isolate stays with it - the heap account those arenas are still charged
   to (section 7.1); `teardown: isolates in sequence on one thread each give back
   all they took` counts 101 kept after 100 isolates. Make isolates long-lived -
@@ -1281,6 +1392,20 @@ library is a substitute.
   Proactor loop be made in a sub-interpreter; 0103 stops every new interpreter
   swapping the process-wide RAW allocator (section 11). Its README says how to re-apply
   them when the baseline moves.
+- **The embedded standard library** (section 10.3) is compiled by the prefix's
+  own `tools/python3/python.exe`, whatever version that is: nothing in
+  `freeze_stdlib.py` or the CMake around it names one, configure refuses an
+  interpreter whose X.Y is not the library's, and the generated source
+  `static_assert`s the same. On an upgrade, recheck what it leans on: the
+  fields of `struct _frozen` (`name`, `code`, `size`, `is_package`), which the
+  generated table names; `look_up_frozen` in `Python/import.c` consulting
+  `PyImport_FrozenModules` after the bootstrap modules and before CPython's own
+  frozen copies, whatever `use_frozen_modules` says; and that a Debug CPython
+  still reads a release build's bytecode. Two build details: clang 19 hands an
+  `#embed`-ed byte to C++ as a signed `char`, so the generated source turns off
+  the narrowing error it would otherwise raise into an `unsigned char` array;
+  and the list of files under `Lib` is a `CONFIGURE_DEPENDS` glob, so a module
+  added there is picked up by the next build.
 - **The first configure builds CPython**, and with it OpenSSL, libffi, SQLite,
   expat, liblzma and bzip2, for the triplet, plus a host CPython vcpkg needs to
   build the static one. The port's README measured about twenty minutes on a
