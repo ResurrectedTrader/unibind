@@ -32,7 +32,9 @@ set(PATCHES
     0016-undup-ffi-symbols.patch # Required for lld-link.
     0018-fix-sysconfig-include.patch
     0019-fix-ssl-linkage.patch
-    0020-Py_NO_LINK_LIB.patch # Remove in 3.14 https://github.com/python/cpython/pull/19740
+    0021-use-system-libmpdec.patch
+    0022-use-system-zstd.patch
+    0023-regenerate-configure.patch # Generated with Autoconf 2.72 after the configure.ac patches.
 )
 
 if(VCPKG_LIBRARY_LINKAGE STREQUAL "static")
@@ -65,29 +67,16 @@ list(APPEND PATCHES 0100-no-whole-program-optimization.patch)
 # unibind: what building extension modules into a static core needs of the sources -
 #  * PC/config.c takes extra _PyImport_Inittab entries from a header the port generates
 #    (vcpkg_builtin_modules.h, below);
-#  * create_builtin refuses a single-phase built-in in a sub-interpreter that checks for
-#    them, before its init runs, as _imp.create_dynamic does a .pyd (3.12 checks a built-in
-#    only once some interpreter has it, so the first isolate got one unsafely), and
-#    _zoneinfo reports a missing C datetime API (_datetime is single-phase) as an
-#    ImportError, so that zoneinfo falls back to its pure-Python ZoneInfo;
 #  * _wmi passes bstr_t a wide literal: a narrow one needs comsupp.lib's
 #    ConvertStringToBSTR, which older toolsets' comsupp.lib does not have in the wchar_t
 #    form a static library's consumer would need;
 #  * a built-in _ctypes defines no DllGetClassObject/DllCanUnloadNow, which would otherwise
-#    become the embedding program's COM exports and collide with its own;
-#  * _elementtree stops compiling a second, bundled copy of expat: it reaches expat through
-#    pyexpat's capsule, and pyexpat uses vcpkg's.
+#    become the embedding program's COM exports and collide with its own.
 list(APPEND PATCHES 0101-builtin-extension-modules.patch)
 # unibind: asyncio's proactor loop installs a signal wakeup fd whenever it is made on a
 # "main thread" - which the first thread of a sub-interpreter is, to threading - and
 # signal.set_wakeup_fd refuses outside the main interpreter. Skip it there.
 list(APPEND PATCHES 0102-asyncio-proactor-in-subinterpreters.patch)
-# unibind: every new interpreter calls _Py_ClearStandardStreamEncoding(), which swapped the
-# process-wide RAW allocator for the "default" one and back, even with nothing to free. Other
-# interpreters (own GIL) allocate through it meanwhile, unlocked; under Py_DEBUG or debug hooks
-# the swap briefly installs an allocator without the hooks - heap corruption. Skip it when
-# there is nothing to free, which is always, after the main interpreter's start.
-list(APPEND PATCHES 0103-no-allocator-swap-in-subinterpreter-init.patch)
 
 # unibind: on Windows a static core cannot load a .pyd (every one links python3X.dll), so the
 # extension modules are compiled into the static library instead, as built-in modules. Each one
@@ -107,16 +96,17 @@ if(VCPKG_TARGET_IS_WINDOWS AND VCPKG_LIBRARY_LINKAGE STREQUAL "static")
         _elementtree
         _hashlib
         _lzma
-        _msi
         _multiprocessing
         _overlapped
         _queue
+        _remote_debugging
         _socket
         _sqlite3
         _ssl
         _uuid
         _wmi
         _zoneinfo
+        _zstd
         pyexpat
         select
         unicodedata
@@ -127,11 +117,9 @@ if(VCPKG_TARGET_IS_WINDOWS AND VCPKG_LIBRARY_LINKAGE STREQUAL "static")
     set(PYTHON_BUILTIN_SYSTEM_LIBS
         ws2_32.lib      # _socket, select, _overlapped, _multiprocessing, _ssl, _hashlib
         iphlpapi.lib    # _socket
-        rpcrt4.lib      # _socket, _uuid, _msi
+        rpcrt4.lib      # _socket, _uuid
         crypt32.lib     # _ssl, openssl
         winmm.lib       # winsound
-        cabinet.lib     # _msi
-        msi.lib         # _msi
         wbemuuid.lib    # _wmi
         propsys.lib     # _wmi
         user32.lib      # openssl
@@ -143,46 +131,12 @@ vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO python/cpython
     REF v${VERSION}
-    SHA512 39298ac5ee6e751264b196710dff998e4ba530f5ed0cb9ec143c138faf00e32356ff387f71287840e7d0acef855cabd75d71d3d636c23807659e79b1643d891c
+    SHA512 e02e73a249227b8ff23e4edd68d1a98b92d98dcce220a2100d79f9c86088e21775e3650d7d184e189ab6e6cc4a720ecaab049c729f3b6be1c71fd0acf9d82776
     HEAD_REF master
     PATCHES ${PATCHES}
 )
 
 vcpkg_replace_string("${SOURCE_PATH}/Makefile.pre.in" "$(INSTALL) -d -m $(DIRMODE)" "$(MKDIR_P)")
-
-# unibind: the modules a PCbuild project defines whose PyInit_ does not return
-# PyModuleDef_Init(...) - single-phase init, state in C globals - and every module it defines.
-function(z_python_scan_inits vcxproj out_all out_single)
-    file(STRINGS "${vcxproj}" sources REGEX [[<ClCompile Include="[^"]+\.(c|cpp)"]])
-    get_filename_component(dir "${vcxproj}" DIRECTORY)
-    set(all "")
-    set(single "")
-    foreach(line IN LISTS sources)
-        string(REGEX MATCH [[Include="([^"]+)"]] _ "${line}")
-        string(REPLACE "\\" "/" source "${dir}/${CMAKE_MATCH_1}")
-        if(NOT EXISTS "${source}")
-            continue() # a devendored library's sources, $(bz2Dir)/... and the like
-        endif()
-        file(READ "${source}" text)
-        string(REPLACE ";" " " text "${text}") # keep the matches one list element each
-        string(REGEX MATCHALL "PyInit_[A-Za-z0-9_]+[(]void[)][ \t\r\n]*[{]" heads "${text}")
-        foreach(head IN LISTS heads)
-            string(REGEX MATCH "^PyInit_([A-Za-z0-9_]+)" _ "${head}")
-            set(name "${CMAKE_MATCH_1}")
-            list(APPEND all "${name}")
-            # The definition runs to the first closing brace in column 0.
-            string(FIND "${text}" "${head}" at)
-            string(SUBSTRING "${text}" ${at} -1 body)
-            string(FIND "${body}" "\n}" end)
-            string(SUBSTRING "${body}" 0 ${end} body)
-            if(NOT body MATCHES "PyModuleDef_Init")
-                list(APPEND single "${name}")
-            endif()
-        endforeach()
-    endforeach()
-    set(${out_all} "${all}" PARENT_SCOPE)
-    set(${out_single} "${single}" PARENT_SCOPE)
-endfunction()
 
 if(VCPKG_TARGET_IS_WINDOWS)
     # unibind: the built-in extension modules (see PYTHON_BUILTIN_EXTENSIONS above).
@@ -190,45 +144,21 @@ if(VCPKG_TARGET_IS_WINDOWS)
     set(builtin_entries "")
     set(PYTHON_BUILTIN_PROJECTS "")
     set(PYTHON_BUILTIN_LIBS "")
-    set(single_phase "")
     foreach(module IN LISTS PYTHON_BUILTIN_EXTENSIONS)
         # A static library, not a .pyd; python_vcpkg.props does the rest.
         vcpkg_replace_string("${SOURCE_PATH}/PCbuild/${module}.vcxproj"
             "<ConfigurationType>DynamicLibrary</ConfigurationType>"
             "<ConfigurationType>StaticLibrary</ConfigurationType>")
-        z_python_scan_inits("${SOURCE_PATH}/PCbuild/${module}.vcxproj" inits singles)
-        if(NOT module IN_LIST inits)
-            message(FATAL_ERROR "No PyInit_${module} in the sources of PCbuild/${module}.vcxproj")
-        endif()
-        if(module IN_LIST singles)
-            list(APPEND single_phase "${module}")
-        endif()
         string(APPEND builtin_decls "extern PyObject* PyInit_${module}(void);\n")
         string(APPEND builtin_entries " \\\n    {\"${module}\", PyInit_${module}},")
         list(APPEND PYTHON_BUILTIN_PROJECTS "${module}.vcxproj")
         list(APPEND PYTHON_BUILTIN_LIBS "$(OutDir)${module}$(PyDebugExt).lib")
     endforeach()
-    if(PYTHON_BUILTIN_EXTENSIONS)
-        # The core's own single-phase built-ins (_datetime, _tracemalloc in 3.12) get the same
-        # treatment: 3.12 lets the first isolate that imports one have it - unsafely - and
-        # refuses it to every later one, which is worse than refusing it always.
-        z_python_scan_inits("${SOURCE_PATH}/PCbuild/pythoncore.vcxproj" inits singles)
-        list(APPEND single_phase ${singles})
-    endif()
-    set(single_phase_names "")
-    foreach(module IN LISTS single_phase)
-        string(APPEND single_phase_names " \"${module}\",")
-    endforeach()
     file(WRITE "${SOURCE_PATH}/PC/vcpkg_builtin_modules.h"
         "/* Generated by the vcpkg python3 port: extension modules built into the core. */\n"
         "${builtin_decls}"
         "#define VCPKG_BUILTIN_INITTAB${builtin_entries}\n"
-        "/* Single-phase init: refused in a sub-interpreter that checks for it (Python/import.c) */\n"
-        "#define VCPKG_BUILTIN_SINGLE_PHASE${single_phase_names}\n"
     )
-    if(single_phase)
-        message(STATUS "Built-in modules with single-phase init, refused in isolated sub-interpreters: ${single_phase}")
-    endif()
 endif()
 
 function(make_python_pkgconfig)
@@ -265,6 +195,10 @@ if(VCPKG_TARGET_IS_WINDOWS)
         find_library(FFI_DEBUG NAMES ffi PATHS "${CURRENT_INSTALLED_DIR}/debug/lib" NO_DEFAULT_PATH)
         find_library(LZMA_RELEASE NAMES lzma PATHS "${CURRENT_INSTALLED_DIR}/lib" NO_DEFAULT_PATH)
         find_library(LZMA_DEBUG NAMES lzma PATHS "${CURRENT_INSTALLED_DIR}/debug/lib" NO_DEFAULT_PATH)
+        find_library(ZSTD_RELEASE NAMES zstd PATHS "${CURRENT_INSTALLED_DIR}/lib" NO_DEFAULT_PATH)
+        find_library(ZSTD_DEBUG NAMES zstd zstdd PATHS "${CURRENT_INSTALLED_DIR}/debug/lib" NO_DEFAULT_PATH)
+        find_library(MPDECIMAL_RELEASE NAMES libmpdec PATHS "${CURRENT_INSTALLED_DIR}/lib" NO_DEFAULT_PATH)
+        find_library(MPDECIMAL_DEBUG NAMES libmpdec PATHS "${CURRENT_INSTALLED_DIR}/debug/lib" NO_DEFAULT_PATH)
         x_vcpkg_pkgconfig_get_modules(PREFIX PC_SQLITE3 MODULES sqlite3 LIBRARIES USE_MSVC_SYNTAX_ON_WINDOWS)
         separate_arguments(SQLITE3_LIBRARIES_DEBUG UNIX_COMMAND "${PC_SQLITE3_LIBRARIES_DEBUG}")
         separate_arguments(SQLITE3_LIBRARIES_RELEASE UNIX_COMMAND "${PC_SQLITE3_LIBRARIES_RELEASE}")
@@ -273,9 +207,10 @@ if(VCPKG_TARGET_IS_WINDOWS)
         list(APPEND add_libs_rel "${BZ2_RELEASE};${EXPAT_RELEASE};${FFI_RELEASE};${LZMA_RELEASE};${SQLITE3_LIBRARIES_RELEASE}")
         list(APPEND add_libs_dbg "${BZ2_DEBUG};${EXPAT_DEBUG};${FFI_DEBUG};${LZMA_DEBUG};${SQLITE3_LIBRARIES_DEBUG}")
         if(PYTHON_BUILTIN_EXTENSIONS)
-            # For a .pyd, openssl.props links these into _ssl and _hashlib.
-            list(APPEND add_libs_rel "${SSL_RELEASE};${CRYPTO_RELEASE}")
-            list(APPEND add_libs_dbg "${SSL_DEBUG};${CRYPTO_DEBUG}")
+            # For a .pyd, openssl.props links these into _ssl and _hashlib, and
+            # python_vcpkg.props libmpdec and zstd into _decimal and _zstd.
+            list(APPEND add_libs_rel "${SSL_RELEASE};${CRYPTO_RELEASE};${MPDECIMAL_RELEASE};${ZSTD_RELEASE}")
+            list(APPEND add_libs_dbg "${SSL_DEBUG};${CRYPTO_DEBUG};${MPDECIMAL_DEBUG};${ZSTD_DEBUG}")
         endif()
     else()
         message(STATUS "WARNING: Extensions have been disabled. No C extension modules will be available.")
@@ -285,7 +220,6 @@ if(VCPKG_TARGET_IS_WINDOWS)
     list(APPEND add_libs_rel "${ZLIB_RELEASE}")
     list(APPEND add_libs_dbg "${ZLIB_DEBUG}")
 
-    configure_file("${SOURCE_PATH}/PC/pyconfig.h" "${SOURCE_PATH}/PC/pyconfig.h")
     configure_file("${CMAKE_CURRENT_LIST_DIR}/python_vcpkg.props.in" "${SOURCE_PATH}/PCbuild/python_vcpkg.props")
     configure_file("${CMAKE_CURRENT_LIST_DIR}/openssl.props.in" "${SOURCE_PATH}/PCbuild/openssl.props")
     file(WRITE "${SOURCE_PATH}/PCbuild/libffi.props"
@@ -363,6 +297,11 @@ if(VCPKG_TARGET_IS_WINDOWS)
         FILES_MATCHING PATTERN *.h
     )
     file(COPY "${SOURCE_PATH}/Lib" DESTINATION "${CURRENT_PACKAGES_DIR}/tools/${PORT}")
+    foreach(launcher IN ITEMS venvlauncher venvwlauncher)
+        file(RENAME "${CURRENT_PACKAGES_DIR}/tools/${PORT}/${launcher}.exe"
+            "${CURRENT_PACKAGES_DIR}/tools/${PORT}/Lib/venv/scripts/nt/${launcher}.exe")
+    endforeach()
+
 
     # Remove any extension libraries and other unversioned binaries that could conflict with the python2 port.
     # You don't need to link against these anyway.
@@ -412,6 +351,7 @@ else()
 
     set(OPTIONS
         "--with-openssl=${CURRENT_INSTALLED_DIR}"
+        "--with-system-libmpdec"
         "--without-ensurepip"
         "--with-suffix="
         "--with-system-expat"
@@ -451,7 +391,6 @@ else()
 
     vcpkg_make_configure(
         SOURCE_PATH "${SOURCE_PATH}"
-        AUTORECONF
         DEFAULT_OPTIONS_EXCLUDE "^--(disable|enable)-static"
         OPTIONS
             ${OPTIONS}

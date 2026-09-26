@@ -34,17 +34,25 @@
 
 // Exported by the (static) interpreter but declared only in its internal
 // headers, which drag in half of CPython's private build configuration. The
-// signature is 3.12's, from Include/internal/pycore_ceval.h: per interpreter,
-// callable from any thread without the GIL - it takes the queue's own lock -
-// and `mainthreadonly` is for the main interpreter's signal machinery.
+// signature is 3.14's (3.13's too), from Include/internal/pycore_ceval.h: per
+// interpreter, callable from any thread without the GIL - it takes the queue's
+// own lock. `flags` is a bit set: `_Py_PENDING_MAINTHREADONLY` (1) is for the
+// main interpreter's signal machinery and `_Py_PENDING_RAWFREE` (2) frees `arg`
+// after the call; neither is wanted here. The result is
+// `_Py_add_pending_call_result`: 0 queued, -1 the queue was full.
 #if defined(__clang__)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wreserved-identifier"
 #endif
-extern "C" int _PyEval_AddPendingCall(PyInterpreterState* interp, int (*func)(void*), void* arg, int mainthreadonly);
+extern "C" int _PyEval_AddPendingCall(PyInterpreterState* interp, int (*func)(void*), void* arg, int flags);
 #if defined(__clang__)
 #pragma clang diagnostic pop
 #endif
+
+namespace {
+/// `_Py_ADD_PENDING_SUCCESS`.
+constexpr int PENDING_CALL_QUEUED = 0;
+}  // namespace
 
 namespace ub::detail {
 
@@ -443,7 +451,7 @@ void Schedule(RuntimeState& runtime, bool evenIfClosed = false) noexcept {
         // happen the request is not lost - a stop is still enforced at every
         // gate and an interrupt waits for the next `Schedule` - but a running
         // loop would not be reached.
-        if (_PyEval_AddPendingCall(runtime.interp, &Service, &runtime, 0) != 0) {
+        if (_PyEval_AddPendingCall(runtime.interp, &Service, &runtime, /*flags=*/0) != PENDING_CALL_QUEUED) {
             runtime.scheduled.store(false);
         }
     }
@@ -1069,37 +1077,32 @@ void DiscardReady(RuntimeState& runtime) noexcept {
 /// a guard page and, past it, the process; this is the room before that.
 constexpr std::size_t STACK_HEADROOM = 128 * 1024;
 
-/// What one unit of CPython's C recursion counter is taken to cost in native
-/// stack. CPython 3.12 guards native recursion with a count, not an address:
-/// two units for every entry into its evaluation loop from C, one for each
-/// C-level recursion (a `repr` of a nested object, a call through `tp_call`).
-/// Its default of 3000 units assumes the 2 MB stack `python.exe` is linked
-/// with - about 700 bytes a unit. Here the stack is whatever thread the
-/// embedder made the isolate on, 1 MB by default on Windows, so the count is
-/// derived from the stack at that same density, a little more cautiously.
+/// CPython 3.14 guards native recursion by address: every entry into its
+/// evaluation loop, and every C-level recursion (a `repr` of a nested object, a
+/// call through `tp_call`), compares the stack pointer with the thread state's
+/// *soft limit* and raises `RecursionError` below it. The limit sits two
+/// margins above the *base* of the stack CPython is told about, and the first
+/// margin is its room to raise the error in; below the *hard limit*, one margin
+/// above the base, it gives up with a fatal error. By default the base is the
+/// thread's own stack end; `PyUnstable_ThreadState_SetStackProtection` moves
+/// it, and this is how an isolate's budget becomes CPython's limit.
 ///
-/// Measured, release: re-entering the evaluation loop through a builtin costs
-/// about 400 bytes a unit, a recursive `repr` about 200. A debug CPython's
-/// unoptimised evaluation loop costs some 7 KB a unit, and the figure follows
-/// the build. **A builtin with a large frame costs more than any count can
-/// allow for**: `sorted` keeps a 2 KB merge buffer on the stack, 2.7 KB a
-/// unit, and a recursion through its `key` overflows the stack of a stock
-/// `python.exe` 3.12 as well. Only CPython 3.14's stack-pointer checks close
-/// that; it is a known gap.
-///
-/// Native recursion - a callback calling back into the engine, through
-/// Python or not - is held by an address instead: every native entry asks
-/// `StackExhausted` (bindings.cpp), which no count can fool.
-#if defined(_DEBUG)
-constexpr std::size_t STACK_BYTES_PER_UNIT = 8192;
+/// The margin is `_PyOS_STACK_MARGIN_BYTES` in Include/internal/pycore_pythonrun.h
+/// - 2048 pointers, 4096 in a debug CPython, whose unoptimised evaluation loop
+/// needs more between two checks. It is not in a public header, so it is
+/// repeated here; the base is put two margins below the floor, which makes the
+/// soft limit the floor itself.
+#if defined(Py_DEBUG)
+constexpr std::size_t CPYTHON_STACK_MARGIN = std::size_t{4096} * sizeof(void*);
 #else
-constexpr std::size_t STACK_BYTES_PER_UNIT = 768;
+constexpr std::size_t CPYTHON_STACK_MARGIN = std::size_t{2048} * sizeof(void*);
 #endif
+static_assert(2 * CPYTHON_STACK_MARGIN <= STACK_HEADROOM, "CPython's margins fit in the headroom below the floor");
 
-/// Fewer units than this and CPython cannot import a module, which nests
-/// several evaluation loops; a stack too small for even this many is one the
-/// embedder cannot run Python on.
-constexpr std::size_t MIN_RECURSION_UNITS = 16;
+/// Native recursion - a callback calling back into the engine, through Python
+/// or not - is held at the same floor by every native entry: each asks
+/// `StackExhausted` (bindings.cpp). A native calling a native never enters the
+/// evaluation loop, so CPython's own check never sees it.
 
 [[nodiscard]] std::uintptr_t StackPointer() noexcept {
     return reinterpret_cast<std::uintptr_t>(_AddressOfReturnAddress());
@@ -1220,11 +1223,18 @@ bool IsolateRuntimeSetup(Isolate& isolate, const IsolateOptions& options) noexce
     const std::size_t budget =
         options.stackLimitBytes != 0 ? std::min<std::size_t>(options.stackLimitBytes, usable) : usable;
     runtime->stackFloor = here - budget;
-    // CPython's own guard is a count, not an address: set the count from the
-    // budget. Python-to-Python calls cost no native stack in 3.12 and are
-    // held by the separate `sys.getrecursionlimit()`, which is left as it is.
-    const std::size_t units = std::clamp<std::size_t>(budget / STACK_BYTES_PER_UNIT, MIN_RECURSION_UNITS, INT_MAX / 2);
-    isolate.impl().tstate->c_recursion_remaining = static_cast<int>(units);
+    // CPython's own guard is an address too: its soft limit goes at the same
+    // floor, so a recursion through Python and one through natives both end
+    // in a `RecursionError` there. Python-to-Python calls cost no native stack
+    // and are held by the separate `sys.getrecursionlimit()`, which is left as
+    // it is. The region runs from two margins below the floor to the top of
+    // the thread's stack; the call refuses only a region smaller than three
+    // margins, which this never is.
+    const std::uintptr_t base = runtime->stackFloor - 2 * CPYTHON_STACK_MARGIN;
+    if (PyUnstable_ThreadState_SetStackProtection(isolate.impl().tstate, reinterpret_cast<void*>(base),
+                                                  static_cast<std::size_t>(high - base)) != 0) {
+        return false;
+    }
     return true;
 }
 

@@ -541,7 +541,7 @@ PyObject* BoundCompare(PyObject* self, PyObject* other, int op) {
 
 Py_hash_t BoundHash(PyObject* self) {
     const Py_hash_t function = PyObject_Hash(AsBound(self)->function);
-    const Py_hash_t receiver = _Py_HashPointer(AsBound(self)->receiver);
+    const Py_hash_t receiver = Py_HashPointer(AsBound(self)->receiver);
     const Py_hash_t combined = function ^ (receiver * 31);
     return combined == -1 ? -2 : combined;
 }

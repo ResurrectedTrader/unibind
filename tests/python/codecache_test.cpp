@@ -62,10 +62,13 @@ TEST_CASE("codecache: the build id names the interpreter and its bytecode") {
     auto script = ub::Script::Compile(f.context, "1");
     REQUIRE(script.has_value());
     const std::string_view id = ub::detail::BackendBuildId();
-    CHECK(id.starts_with("python-3.12"));
-    CHECK(id.find_last_of('-') > std::string_view("python-3.12").size());
-    CHECK(id.back() >= '0');
-    CHECK(id.back() <= '9');
+    CHECK(id.starts_with("python-3.14."));
+    // The version and the bytecode magic number of the interpreter running,
+    // which is what a code cache blob is only good for.
+    CHECK(std::string(id) == py_test::EvalText(f.context, R"(
+import sys, importlib.util
+'python-%d.%d.%d-%d' % (*sys.version_info[:3], int.from_bytes(importlib.util.MAGIC_NUMBER, 'little'))
+)"));
 }
 
 TEST_CASE("codecache: a blob round-trips and is used") {

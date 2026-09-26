@@ -1,8 +1,8 @@
 diff --git a/Lib/asyncio/proactor_events.py b/Lib/asyncio/proactor_events.py
-index 23ea29c..c1eafaf 100644
+index 3cd8cea..3132b98 100644
 --- a/Lib/asyncio/proactor_events.py
 +++ b/Lib/asyncio/proactor_events.py
-@@ -638,8 +638,11 @@ def __init__(self, proactor):
+@@ -633,8 +633,11 @@ def __init__(self, proactor):
          self._accept_futures = {}   # socket file descriptor => Future
          proactor.set_loop(self)
          self._make_self_pipe()
@@ -15,7 +15,7 @@ index 23ea29c..c1eafaf 100644
              signal.set_wakeup_fd(self._csock.fileno())
  
      def _make_socket_transport(self, sock, protocol, waiter=None,
-@@ -688,7 +691,8 @@ def close(self):
+@@ -683,7 +686,8 @@ def close(self):
          if self.is_closed():
              return
  

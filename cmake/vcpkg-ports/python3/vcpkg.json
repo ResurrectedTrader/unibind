@@ -1,7 +1,7 @@
 {
   "name": "python3",
-  "version": "3.12.13",
-  "port-version": 4,
+  "version": "3.14.7",
+  "port-version": 0,
   "description": "The Python programming language",
   "homepage": "https://github.com/python/cpython",
   "license": "Python-2.0",
@@ -66,6 +66,10 @@
       "platform": "windows & static"
     },
     {
+      "name": "mpdecimal",
+      "platform": "windows & static"
+    },
+    {
       "name": "openssl",
       "default-features": false,
       "platform": "windows & static"
@@ -80,7 +84,11 @@
       "host": true,
       "platform": "windows & static"
     },
-    "zlib"
+    "zlib",
+    {
+      "name": "zstd",
+      "platform": "windows & static"
+    }
   ],
   "default-features": [
     {
@@ -114,6 +122,7 @@
           "name": "liblzma",
           "default-features": false
         },
+        "mpdecimal",
         {
           "name": "openssl",
           "default-features": false
@@ -126,7 +135,8 @@
           "name": "vcpkg-pkgconfig-get-modules",
           "host": true,
           "platform": "windows & !mingw"
-        }
+        },
+        "zstd"
       ]
     },
     "readline": {

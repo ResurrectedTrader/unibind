@@ -63,8 +63,9 @@ constexpr double MAX_SAFE_INTEGER = 9007199254740992.0;  // 2^53
     if (value == -1.0 && PyErr_Occurred() != nullptr) {
         // Too big for a double: that is what a double does with it.
         PyErr_Clear();
-        return _PyLong_Sign(number) < 0 ? -std::numeric_limits<double>::infinity()
-                                        : std::numeric_limits<double>::infinity();
+        int sign = 0;
+        (void)PyLong_GetSign(number, &sign);  // cannot fail: an int
+        return sign < 0 ? -std::numeric_limits<double>::infinity() : std::numeric_limits<double>::infinity();
     }
     return value;
 }

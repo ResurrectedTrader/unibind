@@ -338,7 +338,9 @@ function(_unibind_provide_python)
             "sqlite3|sqlite3|sqlite3"
             "expat|libexpatMT libexpat|libexpatdMT libexpatd"
             "liblzma|lzma|lzma"
-            "bzip2|bz2|bz2d")
+            "bzip2|bz2|bz2d"
+            "mpdecimal|libmpdec|libmpdec"
+            "zstd|zstd|zstdd zstd")
         string(REPLACE "|" ";" dep "${dep}")
         list(GET dep 0 depName)
         list(GET dep 1 relNames)
@@ -376,12 +378,12 @@ function(_unibind_provide_python)
     # What the core, its built-in modules and openssl call in Windows itself:
     #   version shlwapi pathcch bcrypt advapi32 user32 kernel32 ole32 oleaut32 - the core
     #   ws2_32 - _socket, select, _overlapped, _multiprocessing, _ssl, openssl
-    #   iphlpapi - _socket          rpcrt4 - _socket, _uuid, _msi
+    #   iphlpapi - _socket          rpcrt4 - _socket, _uuid
     #   crypt32 - _ssl, openssl     winmm - winsound
-    #   msi cabinet - _msi          wbemuuid propsys - _wmi
+    #   wbemuuid propsys - _wmi
     set(UNIBIND_PYTHON_SYSTEM_LIBS
         version ws2_32 shlwapi pathcch bcrypt advapi32 user32 kernel32 ole32 oleaut32
-        iphlpapi rpcrt4 crypt32 winmm msi cabinet wbemuuid propsys PARENT_SCOPE)
+        iphlpapi rpcrt4 crypt32 winmm wbemuuid propsys PARENT_SCOPE)
     set(UNIBIND_PYTHON_STDLIB "${stdlib}" PARENT_SCOPE)
     set(UNIBIND_PYTHON_VERSION "${version}" PARENT_SCOPE)
     message(STATUS "unibind: CPython ${version} (static, /MT) at ${prefix}")

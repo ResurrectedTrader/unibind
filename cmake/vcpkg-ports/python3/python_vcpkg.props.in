@@ -20,10 +20,10 @@
 
       <!-- Extension modules -->
       <AdditionalDependencies Condition="'$(Configuration)|$(IncludeExtensions)' == 'Release|true'">
-        ${BZ2_RELEASE};${EXPAT_RELEASE};${FFI_RELEASE};${LZMA_RELEASE};${SQLITE_RELEASE};%(AdditionalDependencies)
+        ${BZ2_RELEASE};${EXPAT_RELEASE};${FFI_RELEASE};${LZMA_RELEASE};${MPDECIMAL_RELEASE};${ZSTD_RELEASE};${SQLITE_RELEASE};%(AdditionalDependencies)
       </AdditionalDependencies>
       <AdditionalDependencies Condition="'$(Configuration)|$(IncludeExtensions)' == 'Debug|true'">
-        ${BZ2_DEBUG};${EXPAT_DEBUG};${FFI_DEBUG};${LZMA_DEBUG};${SQLITE_DEBUG};%(AdditionalDependencies)
+        ${BZ2_DEBUG};${EXPAT_DEBUG};${FFI_DEBUG};${LZMA_DEBUG};${MPDECIMAL_DEBUG};${ZSTD_DEBUG};${SQLITE_DEBUG};%(AdditionalDependencies)
       </AdditionalDependencies>
     </Link>
 
@@ -42,10 +42,10 @@
 
       <!-- Extension modules -->
       <AdditionalDependencies Condition="'$(Configuration)|$(IncludeExtensions)' == 'Release|true'">
-        ${BZ2_RELEASE};${EXPAT_RELEASE};${FFI_RELEASE};${LZMA_RELEASE};${SQLITE_RELEASE};%(AdditionalDependencies)
+        ${BZ2_RELEASE};${EXPAT_RELEASE};${FFI_RELEASE};${LZMA_RELEASE};${MPDECIMAL_RELEASE};${ZSTD_RELEASE};${SQLITE_RELEASE};%(AdditionalDependencies)
       </AdditionalDependencies>
       <AdditionalDependencies Condition="'$(Configuration)|$(IncludeExtensions)' == 'Debug|true'">
-        ${BZ2_DEBUG};${EXPAT_DEBUG};${FFI_DEBUG};${LZMA_DEBUG};${SQLITE_DEBUG};%(AdditionalDependencies)
+        ${BZ2_DEBUG};${EXPAT_DEBUG};${FFI_DEBUG};${LZMA_DEBUG};${MPDECIMAL_DEBUG};${ZSTD_DEBUG};${SQLITE_DEBUG};%(AdditionalDependencies)
       </AdditionalDependencies>
     </Lib>
   </ItemDefinitionGroup>
@@ -54,11 +54,16 @@
     unibind: extension modules built into a static core.
 
     The port rewrites each module listed in PYTHON_BUILTIN_EXTENSIONS from a DynamicLibrary to a
-    StaticLibrary, which is what the conditions below recognise (pythoncore is the only other
-    static library in the build). This file is imported just before Microsoft.Cpp.targets, so
-    what it sets overrides the project's own settings.
+    StaticLibrary; the conditions below recognise those projects by name (PCbuild has static
+    libraries of its own - pythoncore, and the vendored zlib-ng and liblzma, which the
+    devendoring patches take out of the build). This file is imported just before
+    Microsoft.Cpp.targets, so what it sets overrides the project's own settings.
   -->
-  <PropertyGroup Condition="'$(ConfigurationType)' == 'StaticLibrary' and '$(ProjectName)' != 'pythoncore'">
+  <PropertyGroup>
+    <_VcpkgPythonBuiltinModules>;${PYTHON_BUILTIN_EXTENSIONS};</_VcpkgPythonBuiltinModules>
+    <_VcpkgPythonListed>$(_VcpkgPythonBuiltinModules.Contains(';$(ProjectName);'))</_VcpkgPythonListed>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(ConfigurationType)' == 'StaticLibrary' and '$(_VcpkgPythonListed)' == 'true'">
     <_VcpkgPythonBuiltinModule>true</_VcpkgPythonBuiltinModule>
     <TargetExt>.lib</TargetExt>
   </PropertyGroup>
@@ -75,6 +80,8 @@
   <ItemGroup Condition="'$(_VcpkgPythonBuiltinModule)' == 'true'">
     <!-- pythoncore depends on the module now, not the other way round -->
     <ProjectReference Remove="pythoncore.vcxproj" />
+    <!-- _remote_debugging names the stable-ABI DLL too, which a static core does not have -->
+    <ProjectReference Remove="python3dll.vcxproj" />
     <!-- The version resource belongs to a .pyd; the core has its own -->
     <ResourceCompile Remove="@(ResourceCompile)" />
   </ItemGroup>

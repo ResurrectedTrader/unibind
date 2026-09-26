@@ -1,9 +1,9 @@
 diff --git a/Modules/_ctypes/callbacks.c b/Modules/_ctypes/callbacks.c
-index 65dfb98..793ea09 100644
+index ec113e4..d013954 100644
 --- a/Modules/_ctypes/callbacks.c
 +++ b/Modules/_ctypes/callbacks.c
-@@ -515,6 +515,9 @@ long Call_GetClassObject(REFCLSID rclsid, REFIID riid, LPVOID *ppv)
-     return retval;
+@@ -533,6 +533,9 @@ long Call_GetClassObject(REFCLSID rclsid, REFIID riid, LPVOID *ppv)
+     return E_FAIL;
  }
  
 +/* vcpkg: a _ctypes built into a static core is part of someone else's module, which
@@ -12,7 +12,7 @@ index 65dfb98..793ea09 100644
  STDAPI DllGetClassObject(REFCLSID rclsid,
                           REFIID riid,
                           LPVOID *ppv)
-@@ -528,6 +531,7 @@ STDAPI DllGetClassObject(REFCLSID rclsid,
+@@ -546,6 +549,7 @@ STDAPI DllGetClassObject(REFCLSID rclsid,
      PyGILState_Release(state);
      return result;
  }
@@ -20,7 +20,7 @@ index 65dfb98..793ea09 100644
  
  long Call_CanUnloadNow(void)
  {
-@@ -574,6 +578,7 @@ long Call_CanUnloadNow(void)
+@@ -579,6 +583,7 @@ long Call_CanUnloadNow(void)
    DllRegisterServer and DllUnregisterServer still missing
  */
  
@@ -28,7 +28,7 @@ index 65dfb98..793ea09 100644
  STDAPI DllCanUnloadNow(void)
  {
      long result;
-@@ -582,6 +587,7 @@ STDAPI DllCanUnloadNow(void)
+@@ -587,6 +592,7 @@ STDAPI DllCanUnloadNow(void)
      PyGILState_Release(state);
      return result;
  }
@@ -36,28 +36,8 @@ index 65dfb98..793ea09 100644
  
  #ifndef Py_NO_ENABLE_SHARED
  BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvRes)
-diff --git a/Modules/_zoneinfo.c b/Modules/_zoneinfo.c
-index 47e4012..a786c75 100644
---- a/Modules/_zoneinfo.c
-+++ b/Modules/_zoneinfo.c
-@@ -2709,6 +2709,15 @@ zoneinfomodule_exec(PyObject *m)
- {
-     PyDateTime_IMPORT;
-     if (PyDateTimeAPI == NULL) {
-+        /* vcpkg: an isolated sub-interpreter refuses the single-phase _datetime (see
-+           create_builtin), so datetime there is _pydatetime, which has no C API. Say so as
-+           an ImportError, which zoneinfo answers by using its pure-Python ZoneInfo. */
-+        if (PyErr_ExceptionMatches(PyExc_AttributeError)) {
-+            PyErr_Clear();
-+            PyErr_SetString(PyExc_ImportError,
-+                            "_zoneinfo needs the C datetime API, which this interpreter "
-+                            "does not have");
-+        }
-         goto error;
-     }
- 
 diff --git a/PC/_wmimodule.cpp b/PC/_wmimodule.cpp
-index 2c24761..709892f 100644
+index b9a229b..47ce864 100644
 --- a/PC/_wmimodule.cpp
 +++ b/PC/_wmimodule.cpp
 @@ -117,7 +117,7 @@ _query_thread(LPVOID param)
@@ -70,10 +50,10 @@ index 2c24761..709892f 100644
              WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY,
              NULL,
 diff --git a/PC/config.c b/PC/config.c
-index 48d4bef..02bea2e 100644
+index 6ce2131..93b66cb 100644
 --- a/PC/config.c
 +++ b/PC/config.c
-@@ -80,6 +80,9 @@ extern PyObject* PyInit__tokenize(void);
+@@ -88,6 +88,9 @@ extern PyObject* PyInit__suggestions(void);
  /* tools/freeze/makeconfig.py marker for additional "extern" */
  /* -- ADDMODULE MARKER 1 -- */
  
@@ -83,7 +63,7 @@ index 48d4bef..02bea2e 100644
  extern PyObject* PyMarshal_Init(void);
  extern PyObject* PyInit__imp(void);
  
-@@ -156,6 +159,8 @@ struct _inittab _PyImport_Inittab[] = {
+@@ -172,6 +175,8 @@ struct _inittab _PyImport_Inittab[] = {
  /* tools/freeze/makeconfig.py marker for additional "_inittab" entries */
  /* -- ADDMODULE MARKER 2 -- */
  
@@ -92,75 +72,3 @@ index 48d4bef..02bea2e 100644
      /* This module "lives in" with marshal.c */
      {"marshal", PyMarshal_Init},
  
-diff --git a/PCbuild/_elementtree.vcxproj b/PCbuild/_elementtree.vcxproj
-index 8da5244..393dcb7 100644
---- a/PCbuild/_elementtree.vcxproj
-+++ b/PCbuild/_elementtree.vcxproj
-@@ -93,7 +93,6 @@
-   </PropertyGroup>
-   <ItemDefinitionGroup>
-     <ClCompile>
--      <AdditionalIncludeDirectories>..\Modules\expat;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;XML_STATIC;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-     </ClCompile>
-   </ItemDefinitionGroup>
-@@ -116,6 +115,9 @@
-   </ItemGroup>
-   <ItemGroup>
-     <ClCompile Include="..\Modules\_elementtree.c" />
-+  </ItemGroup>
-+  <!-- vcpkg: expat is reached through pyexpat's capsule; its headers are vcpkg's -->
-+  <ItemGroup Condition="false">
-     <ClCompile Include="..\Modules\expat\xmlparse.c" />
-     <ClCompile Include="..\Modules\expat\xmlrole.c" />
-     <ClCompile Include="..\Modules\expat\xmltok.c" />
-diff --git a/Python/import.c b/Python/import.c
-index ac741cb..a705816 100644
---- a/Python/import.c
-+++ b/Python/import.c
-@@ -1385,6 +1385,33 @@ is_builtin(PyObject *name)
-     return 0;
- }
- 
-+/* vcpkg: the generated header names the built-in modules of a static Windows core that
-+   still use single-phase init - extension modules built in (PC/config.c) and the core's own
-+   (_datetime, _tracemalloc). Their state is in C globals, which interpreters with their own
-+   GIL must not share. _imp.create_dynamic refuses such a .pyd in an interpreter with
-+   check_multi_interp_extensions set, but only after running its init function;
-+   create_builtin checks only when the module is already in the extensions cache, so the
-+   first such interpreter to import one gets it and every later one is refused. Refuse them
-+   always, before init runs, so that nothing of theirs is made in the wrong interpreter. */
-+#ifdef MS_WINDOWS
-+#  include "vcpkg_builtin_modules.h"
-+#endif
-+#ifndef VCPKG_BUILTIN_SINGLE_PHASE
-+#  define VCPKG_BUILTIN_SINGLE_PHASE
-+#endif
-+
-+static int
-+vcpkg_is_single_phase_builtin(const char *name)
-+{
-+    static const char *const names[] = { VCPKG_BUILTIN_SINGLE_PHASE NULL };
-+    for (const char *const *n = names; *n != NULL; n++) {
-+        if (strcmp(*n, name) == 0) {
-+            return 1;
-+        }
-+    }
-+    return 0;
-+}
-+
- static PyObject*
- create_builtin(PyThreadState *tstate, PyObject *name, PyObject *spec)
- {
-@@ -1401,6 +1428,11 @@ create_builtin(PyThreadState *tstate, PyObject *name, PyObject *spec)
-                 mod = PyImport_AddModuleObject(name);
-                 return Py_XNewRef(mod);
-             }
-+            if (vcpkg_is_single_phase_builtin(p->name)
-+                && _PyImport_CheckSubinterpIncompatibleExtensionAllowed(p->name) < 0)
-+            {
-+                return NULL;
-+            }
-             mod = _PyImport_InitFunc_TrampolineCall(*p->initfunc);
-             if (mod == NULL) {
-                 return NULL;

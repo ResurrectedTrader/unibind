@@ -1003,8 +1003,6 @@ outcome
 
 /// Recursion that goes through C at every level - `map` calls the lambda,
 /// which re-enters the evaluation loop - and so consumes native stack.
-/// (Not `sorted`: its frame is big enough to overflow even a stock
-/// `python.exe` 3.12 before CPython's count trips; see runtime.cpp.)
 constexpr std::string_view DEEP_NATIVE = R"(
 depth = 0
 def down():
@@ -1013,6 +1011,22 @@ def down():
     return next(map(lambda _: down(), [0]))
 try:
     down()
+    outcome = 'returned'
+except RecursionError:
+    outcome = 'caught'
+outcome
+)";
+
+/// The same through a builtin with a large frame: `sorted` keeps a 2 KB merge
+/// buffer on the stack, and calls `key` from under it. CPython 3.12 guarded
+/// native recursion with a count, which a frame this size outran - it
+/// overflowed the stack, in a stock `python.exe` 3.12 too. 3.14 checks the
+/// stack pointer itself.
+constexpr std::string_view DEEP_SORTED = R"(
+def down(_):
+    return sorted([0, 1], key=down)
+try:
+    down(0)
     outcome = 'returned'
 except RecursionError:
     outcome = 'caught'
@@ -1085,6 +1099,7 @@ TEST_CASE("stack: runaway recursion is a RecursionError, not a crash, on threads
             Fixture f;
             CHECK(py_test::EvalText(f.context, DEEP_PYTHON) == "caught");
             CHECK(py_test::EvalText(f.context, DEEP_NATIVE) == "caught");
+            CHECK(py_test::EvalText(f.context, DEEP_SORTED) == "caught");
             CHECK(py_test::EvalText(f.context, DEEP_REPR) == "caught");
             // And the isolate is fine afterwards.
             CHECK(EvalInt(f.context, "sum(range(10))") == 45);

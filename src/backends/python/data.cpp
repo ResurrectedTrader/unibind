@@ -130,8 +130,9 @@ constexpr bool NATIVE_LITTLE = std::endian::native == std::endian::little;
         if (d == -1.0 && PyErr_Occurred() != nullptr) {
             // Beyond a double: which is infinity, as a double has it.
             PyErr_Clear();
-            *out = _PyLong_Sign(integer) < 0 ? -std::numeric_limits<double>::infinity()
-                                             : std::numeric_limits<double>::infinity();
+            int sign = 0;
+            (void)PyLong_GetSign(integer, &sign);  // cannot fail: an int
+            *out = sign < 0 ? -std::numeric_limits<double>::infinity() : std::numeric_limits<double>::infinity();
         } else {
             *out = d;
         }
