@@ -222,19 +222,16 @@ std::int64_t UseEverything(int seed) {
     return sum;
 }
 
-/// Every isolate costs the process some ten megabytes of CPython's own - it
-/// keeps a sub-interpreter's arenas when it ends - and a 32-bit process runs
-/// out of address space long before the counts here do on x64.
 #if defined(NDEBUG)
-constexpr int SEQUENTIAL = sizeof(void*) == 8 ? 100 : 20;
+constexpr int SEQUENTIAL = 100;
 #else
 constexpr int SEQUENTIAL = 15;  // a debug CPython starts an interpreter many times slower
 #endif
-constexpr int ROUNDS_PER_THREAD = sizeof(void*) == 8 ? 4 : 1;
+constexpr int ROUNDS_PER_THREAD = 4;
 
 /// Threads running isolates at once - as many against a debug CPython, whose
-/// debug heap once caught CPython switching its process-wide allocator under
-/// running sub-interpreters (cmake/vcpkg-ports/README.md, patch 0103).
+/// debug heap once caught CPython 3.12 switching its process-wide allocator
+/// under running sub-interpreters (docs/python.md, section 11).
 constexpr int CONCURRENT_THREADS = 8;
 
 /// What `UseEverything(seed)` answers when every part of it worked.
@@ -262,11 +259,10 @@ TEST_CASE("teardown: isolates in sequence on one thread each give back all they 
     CHECK(Counted::destroyed == Counted::constructed);
     const long long kept = ub_test::OutstandingAllocations() - before;
     CAPTURE(kept);
-    // One allocation per isolate is kept on purpose: the heap account its
-    // interpreter charged, which CPython 3.12 never gives all its blocks back
-    // to (it does not free a sub-interpreter's arenas), so it cannot be reused.
-    // Anything past that is the backend's own leak.
-    CHECK(kept <= SEQUENTIAL + 16);
+    // Nothing per isolate: the heap account an interpreter charged gets every
+    // block back when it ends, and the next isolate reuses it. Anything past a
+    // handful of first-use allocations is the backend's own leak.
+    CHECK(kept <= 16);
 }
 
 TEST_CASE("teardown: isolates on many threads at once, each churning, share nothing") {

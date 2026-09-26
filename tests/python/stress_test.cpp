@@ -1,36 +1,47 @@
 // Stress cases: too slow, or too hard on the machine, for every run. Skipped
 // unless asked for by name: `unibind_python_tests -tc="stress:*" --no-skip`.
 
-#include <chrono>
+#include <windows.h>
+
+#include <psapi.h>
+
 #include <cstdio>
 
 #include "support.h"
 
-TEST_CASE("stress: making isolates until memory runs out fails cleanly" * doctest::skip()) {
-    // CPython 3.12 keeps some of every sub-interpreter's memory for good (see
-    // docs/python.md), so on x86 a program that makes enough isolates runs its
-    // address space out. What must happen then is an empty `Isolate::New` -
-    // not a crash, and not a hang.
-    int made = 0;
-    auto last = std::chrono::steady_clock::now();
-    for (; made < 100000; ++made) {
+TEST_CASE("stress: process memory over many isolates made and destroyed" * doctest::skip()) {
+    // What an isolate that is gone still costs the process. Each is made,
+    // used the way the lifetime case uses one, and destroyed; the process's
+    // private bytes are printed every 50. A figure that climbs by the same
+    // amount every batch is a leak; one that levels off is the heap's own
+    // high-water mark. CPython 3.12 kept a sub-interpreter's arenas, and this
+    // climbed by about 9.5 MB an isolate; 3.14 frees them - provided the
+    // interpreter ends with no block still allocated - and it levels off at a
+    // few megabytes (docs/python.md, section 11).
+    const auto privateBytes = [] {
+        PROCESS_MEMORY_COUNTERS_EX counters{};
+        counters.cb = sizeof(counters);
+        GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters),
+                             sizeof(counters));
+        return static_cast<long long>(counters.PrivateUsage);
+    };
+    const long long start = privateBytes();
+    for (int made = 1; made <= 1000; ++made) {
         auto isolate = ub::Isolate::New();
-        if (!isolate) {
-            break;
+        REQUIRE(isolate != nullptr);
+        {
+            const ub::HandleScope scope(*isolate);
+            auto context = ub::Context::New(*isolate);
+            REQUIRE(context.has_value());
+            const ub::ContextScope entered(*context);
+            CHECK(py_test::EvalInt(*context, "len([str(i) for i in range(10000)])") == 10000);
         }
-        const ub::HandleScope scope(*isolate);
-        auto context = ub::Context::New(*isolate);
-        if (!context) {
-            break;
-        }
+        isolate.reset();
         if (made % 50 == 0) {
-            const auto now = std::chrono::steady_clock::now();
-            std::printf("stress: %d isolates made, the last batch in %lld ms\n", made,
-                        static_cast<long long>(
-                            std::chrono::duration_cast<std::chrono::milliseconds>(now - last).count()));
-            last = now;
+            std::printf("stress: %d isolates made and destroyed, private bytes +%lld KB\n", made,
+                        (privateBytes() - start) / 1024);
             std::fflush(stdout);
         }
     }
-    MESSAGE("made " << made << " isolates before one was refused");
 }
+

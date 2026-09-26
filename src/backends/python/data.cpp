@@ -582,9 +582,9 @@ struct DataViewObject {
 /// A new bytearray of `size` bytes, contents unspecified. New reference, or
 /// null with `MemoryError` pending.
 ///
-/// Never `PyByteArray_FromStringAndSize(nullptr, size)`: in CPython 3.12,
-/// when the storage cannot be had, that frees the half-made object before it
-/// has set `ob_exports`, and `bytearray`'s deallocator reads the uninitialised
+/// Never `PyByteArray_FromStringAndSize(nullptr, size)`: in CPython (3.12, and
+/// still 3.14), when the storage cannot be had, that frees the half-made object
+/// before it has set `ob_exports`, and `bytearray`'s deallocator reads the uninitialised
 /// field - "SystemError: deallocated bytearray object has exported buffers",
 /// printed as unraisable whenever the stale memory happens to be positive. An
 /// empty bytearray is made whole, and growing it fails cleanly.

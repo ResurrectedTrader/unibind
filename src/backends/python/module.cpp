@@ -167,11 +167,31 @@ PyObject* SymbolNew(PyTypeObject* type, PyObject* args, PyObject* kwds) {
     return reinterpret_cast<PyObject*>(self);
 }
 
-void SymbolDealloc(PyObject* object) {
+/// A symbol is a GC object for one reason: the well-known ones live in the
+/// `Symbol` type's own dictionary (`Symbol.iterator`), and each holds that
+/// type. Without `tp_traverse` the collector cannot see the edge back to the
+/// type, so the cycle outlives the interpreter - and a sub-interpreter that
+/// ends with any block still allocated keeps every one of its arenas, some
+/// megabytes, for the life of the process.
+int SymbolTraverse(PyObject* object, visitproc visit, void* arg) {
     auto* self = reinterpret_cast<SymbolObject*>(object);
+    Py_VISIT(Py_TYPE(object));
+    Py_VISIT(self->description);
+    Py_VISIT(self->dunder);
+    return 0;
+}
+
+int SymbolClear(PyObject* object) {
+    auto* self = reinterpret_cast<SymbolObject*>(object);
+    Py_CLEAR(self->description);
+    Py_CLEAR(self->dunder);
+    return 0;
+}
+
+void SymbolDealloc(PyObject* object) {
     PyTypeObject* type = Py_TYPE(object);
-    Py_XDECREF(self->description);
-    Py_XDECREF(self->dunder);
+    PyObject_GC_UnTrack(object);
+    (void)SymbolClear(object);
     type->tp_free(object);
     Py_DECREF(type);
 }
@@ -197,6 +217,8 @@ PyGetSetDef symbolGetSet[] = {
 PyType_Slot symbolSlots[] = {
     {Py_tp_new, reinterpret_cast<void*>(&SymbolNew)},
     {Py_tp_dealloc, reinterpret_cast<void*>(&SymbolDealloc)},
+    {Py_tp_traverse, reinterpret_cast<void*>(&SymbolTraverse)},
+    {Py_tp_clear, reinterpret_cast<void*>(&SymbolClear)},
     {Py_tp_repr, reinterpret_cast<void*>(&SymbolRepr)},
     {Py_tp_getset, symbolGetSet},
     {Py_tp_doc, const_cast<char*>("A unique property key: ub::Symbol. Symbol(description=None).")},
@@ -207,7 +229,7 @@ PyType_Spec symbolSpec = {
     "unibind.Symbol",
     sizeof(SymbolObject),
     0,
-    Py_TPFLAGS_DEFAULT,
+    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
     symbolSlots,
 };
 

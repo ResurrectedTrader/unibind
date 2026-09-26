@@ -636,8 +636,9 @@ void MakesHugeBuffer(const ub::CallbackInfo& info) {
 }  // namespace
 
 TEST_CASE("lifetimes: a bytearray too large to allocate is refused without a word about exported buffers") {
-    // CPython 3.12's `PyByteArray_FromStringAndSize` frees the object it was
-    // making, when the storage cannot be had, before it has set the field that
+    // CPython's `PyByteArray_FromStringAndSize` (3.12, and still 3.14) frees
+    // the object it was making, when the storage cannot be had, before it has
+    // set the field that
     // counts buffer exports - so the deallocator reads whatever the allocator
     // left there, and when that is positive prints "SystemError: deallocated
     // bytearray object has exported buffers". The litter below puts a

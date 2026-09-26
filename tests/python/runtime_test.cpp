@@ -1355,16 +1355,15 @@ struct Cost {
 }  // namespace
 
 TEST_CASE("lifetime: many isolates in sequence and on many threads leak nothing of this area's") {
-    // Every isolate costs the process some ten megabytes of CPython's (below),
-    // which a 32-bit process runs out of address space for well before this
-    // case's count on x64; fewer there.
-    constexpr int SCALE = sizeof(void*) == 8 ? 1 : 4;
-    (void)CostPerIsolate(4, 1, true);  // warm up whatever the process keeps once
-    const Cost plain = CostPerIsolate(20 / SCALE, 1, false);
-    const Cost busy = CostPerIsolate(20 / SCALE, 1, true);
-    // Six threads at once.
     constexpr int THREADS = 6;
-    const Cost threaded = CostPerIsolate(24 / SCALE, THREADS, true);
+    // Warm up whatever the process keeps once: the heap grows to hold as many
+    // interpreters as are ever alive at once, and keeps that.
+    (void)CostPerIsolate(4, 1, true);
+    (void)CostPerIsolate(THREADS, THREADS, true);
+    const Cost plain = CostPerIsolate(20, 1, false);
+    const Cost busy = CostPerIsolate(20, 1, true);
+    // Six threads at once.
+    const Cost threaded = CostPerIsolate(24, THREADS, true);
     CAPTURE(plain.processBytes);
     CAPTURE(busy.processBytes);
     CAPTURE(threaded.processBytes);
@@ -1377,27 +1376,27 @@ TEST_CASE("lifetime: many isolates in sequence and on many threads leak nothing 
                                                       << threaded.processBytes / 1024 << " KB");
     // What this area allocates for itself - its state, the queues, the timers,
     // the interrupts - is counted exactly, and whatever an isolate left for
-    // teardown is given back with it. One allocation per isolate stays, busy
-    // or not, on purpose: the heap account its interpreter charged, which
-    // CPython 3.12 never returns every block to (it keeps a sub-interpreter's
-    // arenas), so the account cannot be reused. A little over that is the
-    // account list growing.
-    CHECK(plain.allocations <= 1.5);
-    CHECK(busy.allocations <= 1.5);
-    CHECK(threaded.allocations <= 1.5);
-    // CPython 3.12 does not give a sub-interpreter's object arenas back when
-    // it ends - it frees them from 3.13 - so every isolate costs the process
-    // several megabytes whatever this backend does; measured the same with
-    // the allocator hooks switched off. Process memory is a noisy measure -
-    // the heap's own fragmentation, and other processes pressing on this
-    // one's working set - so these bounds are loose, and only catch whole
-    // interpreters leaking: queued jobs, interrupts, a stop and a heap limit
-    // left for teardown must not cost an isolate's worth more. The absolute
-    // figure grows with what an isolate imports - asyncio, for its loop, is
-    // several megabytes of it.
-    CHECK(busy.processBytes < plain.processBytes + 4 * 1024 * 1024);
-    CHECK(threaded.processBytes < plain.processBytes + 4 * 1024 * 1024);
-    CHECK(plain.processBytes < std::int64_t{16} * 1024 * 1024);
+    // teardown is given back with it. The heap account an isolate charged is
+    // pooled, and once every block charged to it has been freed - which with
+    // CPython 3.14 is at the end of the interpreter - the next isolate takes
+    // it over; the threaded figure is the pool growing to as many accounts as
+    // there are isolates alive at once.
+    CHECK(plain.allocations <= 0.5);
+    CHECK(busy.allocations <= 0.5);
+    CHECK(threaded.allocations <= 0.5);
+    // CPython 3.14 frees a sub-interpreter's object arenas when it ends - if
+    // not one block of them is still allocated. A single reference kept past
+    // the end, or a cycle the collector cannot see, keeps all of them, several
+    // megabytes an isolate (3.12 kept them always, about 9.5 MB). So an
+    // isolate that is gone must cost the process next to nothing. Process
+    // memory is a noisy measure - the heap's own fragmentation, and other
+    // processes pressing on this one's working set - so the bound is an
+    // average of a megabyte, well clear of the noise and well under what a
+    // kept interpreter costs.
+    constexpr std::int64_t MEGABYTE = std::int64_t{1024} * 1024;
+    CHECK(plain.processBytes < MEGABYTE);
+    CHECK(busy.processBytes < MEGABYTE);
+    CHECK(threaded.processBytes < MEGABYTE);
 }
 
 // ---------------------------------------------------------------------------

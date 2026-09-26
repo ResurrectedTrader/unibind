@@ -336,7 +336,7 @@ struct BoundObject {
     // Copied out before the call: the callback may drop the last reference to
     // the function it is running as.
     const FunctionCallback callback = function->callback;
-    // Native recursion never passes CPython's own recursion count; the
+    // Native recursion never passes CPython's own stack check; the
     // stack itself is the limit (IsolateOptions::stackLimitBytes).
     if (StackExhausted(isolate)) {
         return nullptr;
@@ -707,7 +707,7 @@ CallbackRecord* StoreAccessorRecord(Isolate& isolate, AccessorGetterCallback get
 
 PyObject* RunAccessorGetter(Isolate& isolate, const CallbackRecord& record, PyObject* key, PyObject* receiver,
                             PyObject* holder) noexcept {
-    // Native recursion never passes CPython's own recursion count; the
+    // Native recursion never passes CPython's own stack check; the
     // stack itself is the limit (IsolateOptions::stackLimitBytes).
     if (StackExhausted(isolate)) {
         return nullptr;
@@ -726,7 +726,7 @@ PyObject* RunAccessorGetter(Isolate& isolate, const CallbackRecord& record, PyOb
 
 bool RunAccessorSetter(Isolate& isolate, const CallbackRecord& record, PyObject* key, PyObject* value,
                        PyObject* receiver, PyObject* holder) noexcept {
-    // Native recursion never passes CPython's own recursion count; the
+    // Native recursion never passes CPython's own stack check; the
     // stack itself is the limit (IsolateOptions::stackLimitBytes).
     if (StackExhausted(isolate)) {
         return false;
@@ -754,7 +754,7 @@ Hook InterceptGet(Isolate& isolate, TemplateRec* shape, PyObject* key, PyObject*
     if (isIndex ? shape->indexed.getter == nullptr : shape->named.getter == nullptr) {
         return Hook::Declined;
     }
-    // Native recursion never passes CPython's own recursion count; the
+    // Native recursion never passes CPython's own stack check; the
     // stack itself is the limit (IsolateOptions::stackLimitBytes).
     if (StackExhausted(isolate)) {
         return Hook::Failed;
@@ -788,7 +788,7 @@ Hook InterceptSet(Isolate& isolate, TemplateRec* shape, PyObject* key, PyObject*
     if (isIndex ? shape->indexed.setter == nullptr : shape->named.setter == nullptr) {
         return Hook::Declined;
     }
-    // Native recursion never passes CPython's own recursion count; the
+    // Native recursion never passes CPython's own stack check; the
     // stack itself is the limit (IsolateOptions::stackLimitBytes).
     if (StackExhausted(isolate)) {
         return Hook::Failed;
@@ -820,7 +820,7 @@ Hook InterceptQuery(Isolate& isolate, TemplateRec* shape, PyObject* key, PyObjec
     if (isIndex ? shape->indexed.query == nullptr : shape->named.query == nullptr) {
         return Hook::Declined;
     }
-    // Native recursion never passes CPython's own recursion count; the
+    // Native recursion never passes CPython's own stack check; the
     // stack itself is the limit (IsolateOptions::stackLimitBytes).
     if (StackExhausted(isolate)) {
         return Hook::Failed;
@@ -852,7 +852,7 @@ Hook InterceptDelete(Isolate& isolate, TemplateRec* shape, PyObject* key, PyObje
     if (isIndex ? shape->indexed.deleter == nullptr : shape->named.deleter == nullptr) {
         return Hook::Declined;
     }
-    // Native recursion never passes CPython's own recursion count; the
+    // Native recursion never passes CPython's own stack check; the
     // stack itself is the limit (IsolateOptions::stackLimitBytes).
     if (StackExhausted(isolate)) {
         return Hook::Failed;
@@ -885,7 +885,7 @@ bool InterceptEnumerate(Isolate& isolate, TemplateRec* shape, PyObject* receiver
                   : !(shape->hasIndexed && shape->indexed.enumerator != nullptr)) {
             continue;
         }
-        // Native recursion never passes CPython's own recursion count; the
+        // Native recursion never passes CPython's own stack check; the
         // stack itself is the limit (IsolateOptions::stackLimitBytes).
         if (StackExhausted(isolate)) {
             return false;
@@ -1557,7 +1557,7 @@ void DestroyBox(NativeBox* box) noexcept {
         return Py_NewRef(Py_None);
     }
     ContextRec* realm = CallingRealm(isolate);
-    // Native recursion never passes CPython's own recursion count; the
+    // Native recursion never passes CPython's own stack check; the
     // stack itself is the limit (IsolateOptions::stackLimitBytes).
     if (StackExhausted(isolate)) {
         return nullptr;
@@ -1618,7 +1618,7 @@ bool IsTemplateMadeType(Isolate& isolate, PyTypeObject* type) noexcept {
 /// is discarded, because what comes out of a `Class<T>` must carry a `T`.
 PyObject* ConstructTemplate(Isolate& isolate, PyTypeObject* type, TemplateRec* tpl, PyObject* const* args,
                             std::size_t argc, bool isConstruct) noexcept {
-    // Native recursion never passes CPython's own recursion count; the
+    // Native recursion never passes CPython's own stack check; the
     // stack itself is the limit (IsolateOptions::stackLimitBytes).
     if (StackExhausted(isolate)) {
         return nullptr;
