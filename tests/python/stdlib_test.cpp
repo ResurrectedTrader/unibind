@@ -10,6 +10,7 @@
 #include <latch>
 #include <string>
 #include <thread>
+#include <vector>
 
 using py_test::Eval;
 using py_test::EvalError;
@@ -172,6 +173,40 @@ hashlib.sha256(b'abc').hexdigest()
     CHECK(EvalText(f.context, "hashlib.sha256.__name__") == "openssl_sha256");
     CHECK(EvalText(f.context, "hashlib.pbkdf2_hmac('sha1', b'password', b'salt', 1, 20).hex()") ==
           "0c60c80f961f0e71f3a9b524af6012062fe037a6");
+}
+
+TEST_CASE("stdlib: ssl - default contexts made in isolates on many threads at once") {
+    // create_default_context reads the Windows certificate stores through
+    // _ssl's enum_certificates, whose certEncodingType kept two strings in C
+    // statics: made by one interpreter, then reference-counted by all of them
+    // from their own threads, and used after the first had ended. That
+    // corrupted the heap; the overlay port's patch 0104 makes them per call.
+    // Each isolate here also ends while the others are still reading.
+    constexpr int THREADS = 8;
+    constexpr int ROUNDS = 3;
+    std::latch start(THREADS);
+    std::vector<std::string> results(THREADS * ROUNDS);
+    std::vector<std::thread> threads;
+    for (int t = 0; t < THREADS; ++t) {
+        threads.emplace_back([t, &results, &start] {
+            start.arrive_and_wait();
+            for (int round = 0; round < ROUNDS; ++round) {
+                results[t * ROUNDS + round] = EvalInFreshIsolate(R"(
+import ssl
+contexts = [ssl.create_default_context() for _ in range(5)]
+stores = [ssl.enum_certificates('ROOT') for _ in range(5)]
+kinds = {kind for store in stores for (_, kind, _) in store}
+str(all(c.cert_store_stats()['x509_ca'] > 0 for c in contexts) and kinds <= {'x509_asn', 'pkcs_7_asn'})
+)");
+            }
+        });
+    }
+    for (std::thread& thread : threads) {
+        thread.join();
+    }
+    for (const std::string& result : results) {
+        CHECK(result == "True");
+    }
 }
 
 TEST_CASE("stdlib: sqlite3 - an in-memory database") {

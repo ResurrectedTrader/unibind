@@ -93,12 +93,10 @@ std::string EvalInFreshIsolate(std::string_view source) {
 }
 
 // One module of each kind a program leans on - packages and plain modules,
-// pure Python over a built-in C half (json, re, decimal via _pydecimal, ssl,
-// sqlite3) and pure Python all through - each made to do something, not only
-// imported. (Not `ssl.create_default_context()`: reading the Windows
-// certificate stores from isolates on several threads at once can corrupt the
-// heap, whichever way the standard library is served - a static cache in
-// CPython's _ssl.c, see docs/python.md section 10.2.)
+// pure Python over a built-in C half (json, re, decimal, ssl, sqlite3) and pure
+// Python all through - each made to do something, not only imported.
+// `ssl.create_default_context()` reads the Windows certificate stores, which
+// the overlay port's patch 0104 made safe from several isolates at once.
 constexpr std::string_view kRepresentative = R"(
 import asyncio, collections, dataclasses, decimal, email, email.message, email.parser, json, pathlib
 import re, sqlite3, ssl, typing
@@ -127,7 +125,7 @@ results = [
     json.dumps({'a': [1, 2]}, sort_keys=True),
     re.sub(r'(\d+)', r'<\1>', 'a1b22'),
     str(asyncio.run(gathered())),
-    str(ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).verify_mode == ssl.CERT_REQUIRED),
+    str(ssl.create_default_context().verify_mode == ssl.CERT_REQUIRED),
     str(db.execute('select sum(v) from t').fetchone()[0]),
     str(decimal.Decimal('0.1') + decimal.Decimal('0.2')),
     str(collections.Counter('abca').most_common(1)[0]),
