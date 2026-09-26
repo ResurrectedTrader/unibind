@@ -1262,12 +1262,18 @@ standard-library package has nothing in it, and
 
 | | from disk | embedded |
 |---|---|---|
-| `unibind_python_repl.exe` | 16.4 MB | 26.0 MB (+9.6 MB) |
-| a new isolate that imports `json`, `re`, `dataclasses` and `typing` (median; `stdlib embedded: isolate start-up, measured`) | about 300 ms | about 45 ms |
-| the REPL running `-c pass`, from process start to exit | about 380 ms | about 130 ms |
-| process memory kept per isolate made and destroyed (section 11) | 9.7 MB | 8.6 MB |
+| `unibind_python_repl.exe` | 15.5 MB | 25.6 MB (+10.1 MB) |
+| a new isolate that imports `json`, `re`, `dataclasses` and `typing` (median; `stdlib embedded: isolate start-up, measured`) | about 115 ms | about 60 ms |
+| the REPL running `-c pass`, from process start to exit (median of 15; fastest) | about 200 ms (155 ms) | about 180 ms (125 ms) |
+| process memory kept per isolate made and destroyed (section 11) | none to speak of | none to speak of |
 
-From disk, every isolate compiled every module it imported from source - no
+CPython 3.14.7, x64 Release, on a machine in use - the process timings moved by
+tens of milliseconds from run to run. Under 3.12.13 the same rows were 16.4 and
+26.0 MB, 300 and 45 ms, 380 and 130 ms, and 9.7 and 8.6 MB: on 3.14 reading
+from disk costs far less than it did, embedding still halves an isolate's
+start-up, and an ended isolate's memory comes back (section 11).
+
+From disk, every isolate compiles every module it imports from source - no
 `.pyc` comes with vcpkg's `Lib`, and none is written - and `asyncio`, which every
 isolate imports for its loop, is the bulk of it. Embedded, it unmarshals
 bytecode instead. The bytes themselves are in the image, shared by every isolate
