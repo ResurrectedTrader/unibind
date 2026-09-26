@@ -23,6 +23,11 @@
 
 #include <windows.h>
 
+#include <crtdbg.h>
+// for `_set_abort_behavior`, a CRT extension that the C header declares and <cstdlib> does not promise.
+// NOLINTNEXTLINE(modernize-deprecated-headers)
+#include <stdlib.h>
+
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -1067,6 +1072,17 @@ int wmain(int argc, wchar_t** argv) {
     // program's Ctrl-C is how a runaway script is stopped.
     SetConsoleCtrlHandler(nullptr, FALSE);
     SetConsoleCtrlHandler(&OnConsoleControl, TRUE);
+    // A crash reports on stderr and ends the process, rather than opening a
+    // dialog box: this program also runs unattended, under CTest and in
+    // scripts, where a box nobody clicks is a hang.
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+    _set_error_mode(_OUT_TO_STDERR);
+    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+    for (const int kind : {_CRT_WARN, _CRT_ERROR, _CRT_ASSERT}) {
+        (void)kind;  // the two calls below are nothing in a release CRT
+        _CrtSetReportMode(kind, _CRTDBG_MODE_FILE);
+        _CrtSetReportFile(kind, _CRTDBG_FILE_STDERR);
+    }
 
     std::vector<std::string> args;
     for (int i = 1; i < argc; ++i) {
