@@ -1030,15 +1030,15 @@ found"), `IsInitialized()` is false and every `Isolate::New` is null. Ship
 `tools/python3/Lib` beside the program as `python-stdlib` - or leave the option
 on.
 
-### Some of the standard library is refused, and some is quietly slower
+### Three standard-library modules are refused in an isolate
 
-**Loud for the first, silent for the second.** An isolate is a sub-interpreter
-with a GIL of its own, and modules that keep state in C globals refuse to load in
-one: **`ctypes` is gone, and so is XML parsing** (`pyexpat`, which `xml.etree`,
-`minidom` and `sax` parse with), with `ImportError: module X does not support
-loading in subinterpreters`. `decimal`, `datetime` and `zoneinfo` still import,
-through their pure-Python twins, and are correspondingly slower. The list is in
-`cmake/vcpkg-ports/README.md`.
+**Loud.** An isolate is a sub-interpreter with a GIL of its own, and a module
+that keeps state in C globals refuses to load in one, with `ImportError: module
+X does not support loading in subinterpreters`. With CPython 3.14 that is only
+`_wmi` (which `platform` does without), `_tracemalloc` - so there is no
+`tracemalloc` - and `_suggestions` (which `traceback` does without). `ctypes`,
+XML parsing, and the C `decimal` and `datetime`, which 3.12 refused, all work.
+The list is in `cmake/vcpkg-ports/README.md`.
 
 ### A package with a C extension cannot be loaded, and there is no `site-packages`
 
@@ -1125,11 +1125,14 @@ on the *type*, never on an instance or its prototype, so an `asyncIterator`
 method does not make `async for` work (`TypeError`) and a `hasInstance` method is
 ignored by `isinstance`.
 
-### Every isolate costs about 9 MB the process never gets back
+### A debug CPython runs out of stack after about fifteen levels
 
-**Silent growth.** CPython 3.12 does not free a sub-interpreter's arenas when it
-ends. An embedding that makes an isolate per request grows by that much per
-request, for ever. Keep one isolate per worker thread for the thread's life.
+**Loud.** A debug build's evaluation loop is unoptimised, and every level of
+recursion through C - an import inside an import, a native calling back into
+Python - costs it about 50 KB of stack, twenty times what a release build
+spends. On a thread with Windows' default 1 MB that is some fifteen levels
+before `RecursionError`, which a release build does not reach for hundreds. Run
+debug builds on threads with a few megabytes of stack.
 
 ### The heap limit counts what the script allocates on its own thread
 
@@ -1146,14 +1149,6 @@ did not bind. CPython can reach the file system, the network, other processes
 and the environment the moment a script says `import os`, and removing things from
 `builtins` does not take any of it away. Run only Python you would run as the
 host process, or contain the process with the operating system.
-
-### A 32-bit program runs out of address space after a few hundred isolates
-
-**Silent, then everything crawls.** Every isolate keeps about 9 MB for good
-(above), and an x86 process has 2 GB by default: the suite's x86 executable got
-into trouble after about 190 isolates, with allocations slowing and threads
-failing to start rather than a clean error. Link with `/LARGEADDRESSAWARE`, and
-keep isolates long-lived.
 
 ---
 

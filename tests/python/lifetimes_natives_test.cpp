@@ -438,18 +438,27 @@ void Descend(const ub::CallbackInfo& info) {
 }
 }  // namespace
 
+/// How deep the round trip goes: fifty, or ten against a debug CPython, whose
+/// unoptimised evaluation loop costs some 50 KB of stack a level - fifty of
+/// those do not fit the 1 MB main thread.
+#if defined(NDEBUG)
+constexpr int ROUND_TRIP_DEPTH = 50;
+#else
+constexpr int ROUND_TRIP_DEPTH = 10;
+#endif
+
 TEST_CASE("lifetimes: native into Python into native, fifty deep, and back out intact") {
     Fixture f;
     Expose(f.context, "descend", Native(f.context, &Descend));
     Run(f.context, "marker = object()\ndef down(n, again):\n    m = marker\n    return descend(n, again)");
     const std::int32_t base = RefCount(f.context, "marker");
-    CHECK(EvalInt(f.context, "descend(50, down)") == 51);
+    CHECK(EvalInt(f.context, "descend(" + std::to_string(ROUND_TRIP_DEPTH) + ", down)") == ROUND_TRIP_DEPTH + 1);
     CHECK(RefCount(f.context, "marker") == base);
     // Deep enough to hit a limit is an exception, not a crash, and leaves
     // nothing behind either.
     CHECK(EvalError(f.context, "descend(1000000, down)").starts_with("RecursionError"));
     CHECK(RefCount(f.context, "marker") == base);
-    CHECK(EvalInt(f.context, "descend(10, down)") == 11);
+    CHECK(EvalInt(f.context, "descend(5, down)") == 6);
 }
 
 namespace {

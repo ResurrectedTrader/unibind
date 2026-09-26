@@ -38,10 +38,10 @@ reports a skip where making one asked the allocator for nothing it could refuse.
 - SpiderMonkey 153.3.0esr: `src/backends/spidermonkey/`. Its own notes - what
   had to bend, and what it measured - are in `docs/spidermonkey.md`, and they
   are the better read for anyone writing a JavaScript backend.
-- CPython 3.12.13: `src/backends/python/`, and `docs/python.md` for the notes.
+- CPython 3.14.7: `src/backends/python/`, and `docs/python.md` for the notes.
   It defines every entry point decisions 1-29 declare, `SetHeapLimitCallback`
   included; `Inspector::Supported()` is false there, as on SpiderMonkey, and
-  `unibind/interop/v8.h` is V8's alone. Its own suite is 269 cases, all green.
+  `unibind/interop/v8.h` is V8's alone. Its own suite is 271 cases, all green.
   Decisions 30-37 are what a second *language* behind the API needed, and not
   one of them changed a public header.
 

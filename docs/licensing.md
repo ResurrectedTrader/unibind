@@ -4,7 +4,7 @@ Short version: **this repository is MIT. The engines it links are not, and the
 one that matters most is SpiderMonkey, which is MPL-2.0.** Linking it into a
 proprietary product is allowed and always was - what MPL asks for is that the
 *engine's* source stays available, not yours. **CPython is permissive** (the PSF
-license), but a program linked with that backend carries seven more libraries
+license), but a program linked with that backend carries nine more libraries
 and CPython's standard library compiled into it, and each wants its notice;
 and because the CPython here is patched, the PSF license asks for a summary of
 the changes.
@@ -40,8 +40,8 @@ Build-time third parties:
 | doctest | MIT | vcpkg, tests only, not part of the library |
 | V8 | BSD-3-Clause | not vendored; fetched, or a path you point CMake at |
 | SpiderMonkey | MPL-2.0 | not vendored; fetched, or a path you point CMake at |
-| CPython 3.12.13 | PSF License v2 (and the older CNRI and BeOpen terms it carries) | built by vcpkg; the port and patches in `cmake/vcpkg-ports/python3` |
-| the port files themselves | MIT (vcpkg) | `cmake/vcpkg-ports/python3` |
+| CPython 3.14.7 | PSF License v2 (and the older CNRI and BeOpen terms it carries) | built by vcpkg; the port and patches in `cmake/vcpkg-ports/python3` |
+| the port files themselves | MIT (vcpkg) | `cmake/vcpkg-ports/python3` and `cmake/vcpkg-ports/mpdecimal` |
 | OpenSSL 3 | Apache-2.0 | built by vcpkg for the python backend; linked into it |
 | libffi | MIT | the same |
 | SQLite | public domain | the same |
@@ -49,6 +49,8 @@ Build-time third parties:
 | liblzma (xz) | 0BSD | the same |
 | bzip2 | bzip2's BSD-style licence | the same |
 | zlib | zlib licence | the same |
+| libmpdec (mpdecimal) | BSD-2-Clause | the same |
+| zstd | BSD-3-Clause (dual-licensed with GPLv2; the BSD terms are the ones taken) | the same |
 
 So the copyright in this tree is the authors' own, apart from that one port
 directory, and the licence here could have been anything. It is MIT.
@@ -136,7 +138,7 @@ product is fine. What it costs is notices, and one thing the PSF license asks
 that the others do not. Two parts of CPython go out with your program, and both
 are covered:
 
-- **The engine, linked in**: `python312.lib`, which is CPython with the standard
+- **The engine, linked in**: `python314.lib`, which is CPython with the standard
   library's C extension modules built into it.
 - **The standard library, compiled into it**: CPython's own Python source,
   byte-compiled at build time and embedded in the backend library
@@ -153,17 +155,17 @@ What you owe:
    included.
 2. **A brief summary of the changes** (§3). The PSF license asks it of anyone who
    makes a derivative work available, and a CPython built with patches is one:
-   the registry port's patches and the four added here
+   the registry port's patches and the five added here
    (`cmake/vcpkg-ports/README.md` describes ours, each with its reason, and the
    port's other patches are named in its `portfile.cmake`). Shipping that README,
    or a paragraph made from it, discharges this.
 3. **The notices of what CPython incorporates.** CPython's own source contains
-   third-party code under other permissive terms - libmpdec, which `_decimal` is
-   built on, and others - listed in CPython's documentation, "Licenses and
-   Acknowledgements for Incorporated Software", for the version you ship. vcpkg's
-   `copyright` file does not include that list; take it from the documentation of
-   3.12.13.
-4. **The seven libraries linked beside it**, each from its own `copyright` file
+   third-party code under other permissive terms, listed in CPython's
+   documentation, "Licenses and Acknowledgements for Incorporated Software", for
+   the version you ship. vcpkg's `copyright` file does not include that list;
+   take it from the documentation of 3.14.7. (libmpdec, which 3.12's `_decimal`
+   compiled in from CPython's tree, is a library of its own now - below.)
+4. **The nine libraries linked beside it**, each from its own `copyright` file
    under `share/<port>/` in the same vcpkg prefix:
    - **OpenSSL 3, Apache-2.0**: include the licence text; §4 also asks that a
      `NOTICE` file, where the work has one, be passed on.
@@ -172,11 +174,14 @@ What you owe:
    - **bzip2** and **zlib**: nothing is required in a binary distribution - both
      ask only that source be kept with its notice and altered source be marked -
      and an acknowledgement in the documentation is appreciated.
+   - **libmpdec, BSD-2-Clause** and **zstd, BSD-3-Clause**: the copyright
+     notice, the conditions and the disclaimer. (zstd's `copyright` file carries
+     its GPLv2 alternative too; the BSD terms are the ones that apply here.)
    - **liblzma (xz), 0BSD**: nothing is required.
    - **SQLite, public domain**: nothing is required.
 
    Only the ones actually linked apply, and a program built from this tree links
-   all seven: `_unibind_provide_python` names whichever the prefix holds.
+   all nine: `_unibind_provide_python` names whichever the prefix holds.
 
 None of it asks for your source, and none of it restricts how you licence your
 own work.

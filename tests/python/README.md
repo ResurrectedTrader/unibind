@@ -24,17 +24,19 @@ built on the backend, so it runs from anywhere with nothing beside it;
 
 ## What a run looks like
 
-**269 cases** - the figure the test binary reports, and the one to compare a run
-against (120679 assertions in a Release x64 run, most of them the lifetime and
+**271 cases** - the figure the test binary reports, and the one to compare a run
+against (about 120700 assertions in a Release x64 run, most of them the lifetime and
 teardown cases counting references in loops; it differs by build and
 architecture and is not the number to compare). `-ltc` lists them,
 `-tc="objects:*"` runs one area.
 
 One more case is registered but skipped unless asked for by name:
-`stress: making isolates until memory runs out fails cleanly`, which makes
-isolates until `Isolate::New` answers empty. It is too slow and too hard on the
-machine for every run - it runs until memory does - so run it deliberately: `unibind_python_tests -tc="stress:*" --no-skip`. It is
-not among the 269, and CTest does not register it.
+`stress: process memory over many isolates made and destroyed`, which makes,
+uses and destroys a thousand isolates and prints the process's private bytes
+every fifty: a figure that levels off is the heap's high-water mark, one that
+climbs by the same amount every batch is a leak. It takes a minute or more, so
+run it deliberately: `unibind_python_tests -tc="stress:*" --no-skip`. It is not
+among the 271, and CTest does not register it.
 
 Under CTest each case is a test of its own, named `python.<area>: <what it
 pins>`, with the label `suite`, plus one more:
@@ -74,12 +76,12 @@ Each file is one area, and every case name starts with its area:
 | `binary_test.cpp` | `binary`: `bytearray` buffers, `unibind.TypedArray` and `unibind.DataView` |
 | `serialization_test.cpp` | `clone`: structured clone |
 | `codecache_test.cpp` | `codecache`: the compiled-code cache |
-| `stdlib_test.cpp` | `stdlib`: the extension modules built into the static CPython, and the ones an isolate refuses |
+| `stdlib_test.cpp` | `stdlib`: the extension modules built into the static CPython, the few an isolate refuses, and SSL contexts made on many threads at once |
 | `stdlib_embedded_test.cpp` | `stdlib embedded`: the pure-Python standard library compiled into the backend, served as frozen modules - and a directory given winning over it |
 | `lifetimes_test.cpp` | `lifetimes`: handles, frames, `Global`s and realms counted exactly - references taken and given back, frame and root exhaustion, a realm surviving `globals().clear()` and a copied dict, many realms and scripts leaving the C++ heap where it was, and the `bytearray` that could not be allocated |
 | `lifetimes_natives_test.cpp` | `lifetimes`: when a `Class<T>` native is destroyed - cycles, resurrection, destructors that run script or make natives at teardown, an instance dying on a script's thread - and how long a callback's values live |
 | `teardown_test.cpp` | `teardown`: isolates in sequence and in parallel giving back all they took, threads a script started (stopped by `TerminateExecution`, stopped and waited for by `~Isolate`, left behind when stuck), stops that land on code holding things, and asyncio's current loop after `asyncio.run` |
-| `stress_test.cpp` | `stress`: skipped unless asked for - making isolates until memory runs out |
+| `stress_test.cpp` | `stress`: skipped unless asked for - process memory over a thousand isolates |
 
 and the rest of the directory:
 
@@ -119,10 +121,13 @@ standalone.cmake    runs a program from a copy of it alone in an empty
   in `runtime_test.cpp` had one, and ran only in the whole-suite test until
   they were renamed.
 - **Run concurrent cases at full thread count in Debug too.** A debug CPython
-  is where a race inside CPython shows up: `concurrency_test.cpp` found the one
-  patch 0103 fixes (`docs/python.md` section 11), and would not have at two
-  threads.
-- **Size isolate counts for x86**, where every isolate keeps about 9 MB of a
-  32-bit address space for good; the cases that make many scale down there.
+  is where a race inside CPython shows up: `concurrency_test.cpp` found 3.12's
+  allocator swap (`docs/python.md` section 11), and would not have at two
+  threads; `stdlib: ssl - default contexts made in isolates on many threads at
+  once` crashed every Debug run before the overlay port's patch 0104.
+- **Size recursion depths for Debug.** A debug CPython spends about 50 KB of
+  stack a level of recursion through C, twenty times a release build, so a case
+  that recurses on purpose - `lifetimes: native into Python into native` and the
+  `stack` cases - goes less deep, or gets a bigger limit, there.
 - **A case written against a promise stays red rather than weakened**, as in the
   shared suite.

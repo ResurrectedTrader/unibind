@@ -1,9 +1,10 @@
 # CPython, and what a third engine in another language cost
 
-Notes from writing the third backend, against CPython 3.12.13 built as a static
-library. `docs/spidermonkey.md` asked whether `docs/lifetimes.md` was a design
-or a description of V8; this backend asks a harder question - whether the API
-is a design or a description of *JavaScript* - and this document is the answer,
+Notes from writing the third backend, against CPython 3.14.7 built as a static
+library (it was written against 3.12.13; section 13 says what the move changed).
+`docs/spidermonkey.md` asked whether `docs/lifetimes.md` was a design or a
+description of V8; this backend asks a harder question - whether the API is a
+design or a description of *JavaScript* - and this document is the answer,
 written the same way: the model first, then every place the engine and the API
 disagreed and what the backend did about it.
 
@@ -27,7 +28,7 @@ The short answer, in three parts:
 
 The shared suite in `tests/cases/` is written in JavaScript source as much as in
 C++, so it does not run here and the parity comparison does not include this
-backend. It has a suite of its own - `tests/python/`, 269 cases - written the
+backend. It has a suite of its own - `tests/python/`, 271 cases - written the
 same way: against `ub::` only, with Python as the script language. Every
 behaviour below that a test pins names the test.
 
@@ -43,7 +44,7 @@ behaviour below that a test pins names the test.
 8. [Binary data, structured clone, and the code cache](#8-binary-data-structured-clone-and-the-code-cache)
 9. [What is not here](#9-what-is-not-here)
 10. [The standard library, and shipping a program](#10-the-standard-library-and-shipping-a-program)
-11. [What CPython 3.12 itself costs](#11-what-cpython-312-itself-costs)
+11. [What CPython itself costs](#11-what-cpython-itself-costs)
 12. [Python is not a sandbox](#12-python-is-not-a-sandbox)
 13. [Build notes, and what an upgrade has to recheck](#13-build-notes-and-what-an-upgrade-has-to-recheck)
 
@@ -91,7 +92,7 @@ reason the other two do.
 The rest of the platform, briefly:
 
 - `BackendName()` is `"python"` and `BackendVersion()` is `PY_VERSION`
-  (`"3.12.13"`).
+  (`"3.14.7"`).
 - `detail::BackendBuildId()` is `python-<version>-<magic>`, the magic being the
   bytecode magic number: exactly what a `.pyc` is refused over, and so exactly
   what a code-cache blob has to be keyed on (decision 19).
@@ -913,12 +914,13 @@ a thread-local is the whole attribution), and the header is what lets a free, on
 any thread and at any time, credit the right one. 16 bytes keeps every block
 16-aligned, which is what both allocators underneath promise. An account is never
 freed, because a block charged to an isolate can be freed after the isolate has
-gone; one whose count has fallen back to zero is reused by the next isolate. In
-practice CPython 3.12 never gives *every* block of a sub-interpreter back
-(section 11), so an account is not reused, and **one small allocation per isolate
-stays for the life of the process** - the account itself, tens of bytes - which
-the suite asserts is all the backend keeps (`lifetime: many isolates in sequence
-and on many threads leak nothing of this area's`).
+gone; one whose count has fallen back to zero is reused by the next isolate.
+CPython 3.14 gives every block of a sub-interpreter back when it ends, so an
+account is reused, and **the backend keeps nothing per isolate**: the pool holds
+as many accounts as there were ever isolates alive at once, and the suite
+asserts that (`lifetime: many isolates in sequence and on many threads leak
+nothing of this area's`). Under 3.12, which never freed a sub-interpreter's
+arenas, one account - tens of bytes - stayed per isolate.
 
 What is and is not counted:
 
@@ -965,33 +967,47 @@ pending.
 
 `stackLimitBytes` is measured from `Isolate::New`, as on the other two, and **held
 to the thread's real stack**: the budget is `stackLimitBytes` or what is left of
-the thread's stack below that point less 128 KiB, whichever is smaller. The 128
-KiB is headroom for CPython to build and raise its `RecursionError` in, and for
-whatever catches it. A limit past the end of the stack is no limit at all, so it
-is clamped rather than believed (`stack: a stackLimitBytes past the end of the
-thread's stack is held to the stack`). 0 means the whole stack less the headroom.
+the thread's stack below that point less a headroom, whichever is smaller. The
+headroom - 128 KiB, 192 KiB against a debug CPython - is CPython's own margins
+below its limit (below) and room past them for whatever catches the error. A
+limit past the end of the stack is no limit at all, so it is clamped rather than
+believed (`stack: a stackLimitBytes past the end of the thread's stack is held to
+the stack`). 0 means the whole stack less the headroom.
 
-That floor is enforced twice, because CPython 3.12 guards native recursion with a
-*count*, not an address:
+That floor is one address, enforced twice:
 
-- **CPython's C recursion count** (`c_recursion_remaining`) is set from the
-  budget at 768 bytes a unit - 8 KiB in a debug CPython, whose unoptimised
-  evaluation loop costs some 7 KB a unit where a release one costs about 400
-  bytes. Its default of 3000 units assumes the
-  2 MB stack `python.exe` is linked with, where a thread made by an embedder has
-  1 MB by default. Python-to-Python calls cost no C stack in 3.12 and are held by
-  `sys.getrecursionlimit()` (1000), which is left alone.
+- **CPython's own check.** CPython 3.14 guards recursion through C with the
+  stack pointer: every entry into its evaluation loop, and every C-level
+  recursion (a `repr` of a nested object, a call through `tp_call`), compares it
+  with the thread state's *soft limit* and raises `RecursionError` below it
+  ("Stack overflow (used N kB)"). One *margin* below that is a hard limit, past
+  which it gives up with a fatal error. `PyUnstable_ThreadState_SetStackProtection`
+  places the soft limit on the isolate's floor. Python-to-Python calls cost no C
+  stack and are held by `sys.getrecursionlimit()` (1000), which is left alone.
 - **Every native entry** - a native function, an accessor, an interceptor hook, a
   template constructor - compares the stack pointer against the floor, and fails
-  the call with `RecursionError` below it. A native calling a native never passes
-  CPython's count, and no count can be fooled by this (`stack: native recursion
-  that never enters Python is a RecursionError, not a crash`, `stack: recursion
-  bouncing between a native and Python is a RecursionError, not a crash`).
+  the call with `RecursionError` below it. A native calling a native never
+  enters the evaluation loop, so CPython's check never sees it (`stack: native
+  recursion that never enters Python is a RecursionError, not a crash`, `stack:
+  recursion bouncing between a native and Python is a RecursionError, not a
+  crash`).
 
-**The known gap is a builtin with a large frame.** `sorted` keeps a 2 KB merge
-buffer on the stack, and a recursion through its `key=` costs about 2.7 KB a
-unit - more than any count can allow for. It overflows a stock `python.exe` 3.12 too;
-only CPython 3.14's stack-pointer checks close it.
+The margin has to be more than CPython spends between two checks. A release
+build spends 2.5 KB a level through `map` and 7 KB through `sorted(key=...)`,
+well inside its 16 KB (x64). A debug build, whose evaluation loop MSVC leaves
+unoptimised, spends 52 KB and 58 KB - more than upstream's 32 KB, so a runaway
+recursion could step over the soft limit into `Fatal Python error:
+Unrecoverable stack overflow`; the overlay port's patch 0105 makes the debug
+margin 64 KB. The same figure is the other thing a debug build changes: a 1 MB
+thread holds only about fifteen levels of recursion through C, where a release
+build holds hundreds.
+
+Under 3.12 CPython counted instead of measuring (`c_recursion_remaining`, which
+the backend set from the budget), and **a builtin with a large frame** outran
+the count: `sorted` keeps a 2 KB merge buffer on the stack, and a recursion
+through its `key=` overflowed the stack - a stock `python.exe` 3.12's too. It is
+a `RecursionError` now (`stack: runaway recursion is a RecursionError, not a
+crash, on threads of several sizes`).
 
 ## 8. Binary data, structured clone, and the code cache
 
@@ -1017,8 +1033,8 @@ over nothing`). A buffer exported through the buffer protocol cannot be resized
 while the export lives, which is CPython's own rule.
 
 **A buffer too large to allocate is made by growing an empty one**, never with
-`PyByteArray_FromStringAndSize(NULL, n)`. In CPython 3.12 that call, when it
-cannot get the storage, frees the half-made `bytearray` before it has set the
+`PyByteArray_FromStringAndSize(NULL, n)`. In CPython - 3.12, and 3.14.7 still -
+that call, when it cannot get the storage, frees the half-made `bytearray` before it has set the
 field that counts buffer exports, and the deallocator reads whatever the
 allocator left there: when that happened to be positive, CPython printed
 `SystemError: deallocated bytearray object has exported buffers` as an
@@ -1113,38 +1129,39 @@ An isolate is an own-GIL sub-interpreter with `check_multi_interp_extensions` on
 and an extension module that keeps state in C globals cannot be shared between
 interpreters with GILs of their own. CPython's answer is to refuse it, and so is
 this backend's. `import X` fails with `ImportError: module X does not support
-loading in subinterpreters` and leaves nothing behind (`stdlib: the modules that
-keep state in C globals refuse an isolate`):
+loading in subinterpreters` and leaves nothing behind (`stdlib: the few modules
+not safe under a GIL of their own refuse an isolate`). In 3.14 that is three
+modules:
 
 | refused | why | what still works |
 |---|---|---|
-| `_ctypes` | single-phase init | nothing: **no `ctypes`** |
-| `_decimal` | single-phase init | `decimal`, through `_pydecimal` |
-| `_datetime` | single-phase init | `datetime`, through `_pydatetime` |
-| `_zoneinfo` | needs `_datetime`'s C API | `zoneinfo`, through its pure-Python `ZoneInfo` |
+| `_wmi` | does not declare per-interpreter-GIL support | nothing (`platform` does without it) |
 | `_tracemalloc` | single-phase init | nothing: no `tracemalloc` |
-| `_msi` | single-phase init | nothing |
-| `pyexpat`, `_elementtree` | not isolated yet (gh-103092) | nothing parses XML: `xml.etree`, `xml.dom.minidom` and `xml.sax` import, and fail when asked to parse |
-| `_wmi` | does not declare per-interpreter-GIL support | nothing |
+| `_suggestions` | declares it cannot be shared | `traceback` works out its "Did you mean" hints without it |
 
-3.12 applied the single-phase check to a `.pyd` but, for a *built-in* module, only
-once it was already cached - so the first isolate to import `_ctypes` got it,
-sharing C globals with every other interpreter, and every later one was refused.
-The overlay port's patch 0101 applies the check always, before the module's init
-runs. Everything works in the main interpreter, which never runs a script.
+Every other built-in module loads, with state of its own per interpreter:
+`ctypes`, `decimal` and `datetime` run on their C modules, `zoneinfo` on
+`_zoneinfo`, and `xml.etree`, `xml.dom.minidom` and `xml.sax` parse with
+`pyexpat` (`stdlib: ctypes, decimal, datetime, zoneinfo and XML run on their C
+modules in an isolate`). Under 3.12 the list was much longer - `_ctypes`,
+`_decimal`, `_msi` and the core's `_datetime` had single-phase init, and
+`pyexpat` and `_elementtree` were not isolated yet (gh-103092) - so an isolate had
+no ctypes and no XML parsing, and `decimal` and `datetime` ran on `_pydecimal`
+and `_pydatetime`. 3.13 and 3.14 made them multi-phase, removed `_msi`, and made
+the refusal itself uniform: a single-phase module's init now runs under the main
+interpreter, and is refused in an isolated one afterwards, whether it is a `.pyd`
+or built in. (3.12 checked a built-in only once some interpreter had it, which
+the overlay port used to patch.) Everything works in the main interpreter, which
+never runs a script.
 
 `zoneinfo` works, but Windows has no tz database: `ZoneInfo('Europe/London')`
 needs the `tzdata` package on `sys.path`. `ssl` finds the Windows certificate
-stores by itself - but not safely from several isolates at once. `_ssl.c` (3.12,
-and 3.14 still) caches the two encoding names `enum_certificates` returns (`certEncodingType`) in
-C `static` variables: one `str` made by whichever interpreter got there first
-and reference-counted by every other under GILs of their own. Six isolates on six
-threads each calling `ssl.create_default_context()` - which reads the stores -
-crashed with `STATUS_HEAP_CORRUPTION` in most runs with the standard library read
-from disk; with it embedded, forty runs did not, which is timing, not a fix.
-Nothing in the backend or the overlay port changes this yet: make the first
-default context before starting isolates on other threads, or keep certificate
-loading to one isolate.
+stores by itself, from any number of isolates at once: `_ssl`'s
+`certEncodingType` used to cache two strings in C `static` variables, made by
+whichever interpreter got there first and reference-counted by all of them, and
+isolates making default contexts on several threads crashed; the overlay port's
+patch 0104 makes them per call (`stdlib: ssl - default contexts made in isolates
+on many threads at once`).
 
 ### 10.3 Where the standard library comes from
 
@@ -1283,13 +1300,13 @@ other Python is at hand; turn the option off for such a prefix.
 
 ### 10.4 Linking
 
-Beside `python312.lib` (`python312_d.lib` for Debug) a program links the
+Beside `python314.lib` (`python314_d.lib` for Debug) a program links the
 third-party libraries its built-in modules call, which stay vcpkg's own static
 libraries rather than being merged in - so a program that uses OpenSSL or SQLite
 itself links one copy of each: zlib, OpenSSL (`libssl`, `libcrypto`), libffi,
-SQLite, expat, liblzma and bzip2. And from Windows: `version ws2_32 shlwapi
-pathcch bcrypt advapi32 user32 kernel32 ole32 oleaut32 iphlpapi rpcrt4 crypt32
-winmm msi cabinet wbemuuid propsys`. `unibind::backend_python` and the install
+SQLite, expat, liblzma, bzip2, libmpdec and zstd. And from Windows: `version
+ws2_32 shlwapi pathcch bcrypt advapi32 user32 kernel32 ole32 oleaut32 iphlpapi
+rpcrt4 crypt32 winmm wbemuuid propsys`. `unibind::backend_python` and the install
 tree's `unibind-backend-python.cmake` name all of them; nobody should be
 assembling that list by hand.
 
@@ -1303,53 +1320,37 @@ python prefix in both configurations.
 
 The CRT is `/MT` (`/MTd` in Debug), as for the other two, and a `/MD` consumer
 fails at link with LNK2038. `Py_NO_LINK_LIB` keeps `pyconfig.h`'s `#pragma
-comment(lib)` from naming the import library that does not exist.
+comment(lib)` from naming the import library that does not exist - which 3.14's
+`pyconfig.h` honours itself, where 3.12's needed a vcpkg patch.
 
-## 11. What CPython 3.12 itself costs
+## 11. What CPython itself costs
 
 These are the engine's, not the backend's, and each is the kind of thing that
 decides how an embedding is shaped:
 
-- **An isolate costs the process memory it never gets back.** CPython 3.12 does
-  not free a sub-interpreter's object arenas when it ends - 3.13 does. Measured by
-  `lifetime: many isolates in sequence and on many threads leak nothing of this
-  area's`: about **8.6 MB of process memory kept per isolate** made and destroyed,
-  the same with the allocator hooks off, and most of it asyncio, which every
-  isolate imports for its loop - 9.7 MB with the standard library read from disk
-  (section 10.3), which compiles every module from source. Of the backend's own C++ allocations, one small
-  one per isolate stays with it - the heap account those arenas are still charged
-  to (section 7.1); `teardown: isolates in sequence on one thread each give back
-  all they took` counts 101 kept after 100 isolates. Make isolates long-lived -
-  one per worker thread - not one per request.
-
-  On **x86** this is a limit, not a cost: a few hundred isolates fill the 2 GB
-  address space a 32-bit process gets by default, and a process that close to the
-  end does not fail cleanly - every allocation crawls, and threads stop starting.
-  The suite's own x86 executable reached that point after about 190 isolates. Link
-  a 32-bit program with `/LARGEADDRESSAWARE` (4 GB on 64-bit Windows), as the
-  suite and the REPL example are, and still keep isolates long-lived.
+- **An isolate gives its memory back - if nothing of it is left.** CPython 3.14
+  frees a sub-interpreter's object arenas when it ends, but only when not one
+  block of them is still allocated; one reference kept past the end - a cycle the
+  collector cannot see, an object a native still holds - keeps all of them, a few
+  megabytes. The backend itself had one such cycle until the move to 3.14, in its
+  `Symbol` type, and it cost 3.5 MB an isolate; `lifetime: many isolates in
+  sequence and on many threads leak nothing of this area's` now measures what an
+  isolate made, used and destroyed costs the process - under 1 MB on average is
+  the bound, and it measures about nothing - and `stress: process memory over
+  many isolates made and destroyed` shows 1000 of them levelling off at about 8
+  MB in all. **Under 3.12** a sub-interpreter's arenas were never freed: about
+  9.5 MB an isolate, for good, and on x86 a few hundred isolates filled the 2 GB
+  address space a 32-bit process gets by default. The suite and the REPL are
+  still linked `/LARGEADDRESSAWARE` on x86 - 4 GB on 64-bit Windows, for
+  nothing - but no longer need it. Making an isolate still costs tens of
+  milliseconds (section 10.3), so long-lived isolates - one per worker thread -
+  are still the shape to aim for.
 - **An interpreter cannot be ended under a thread that is still in it.**
   `Py_EndInterpreter` with another thread alive is a fatal error, and it joins
   every non-daemon `threading.Thread` first, for ever if one never ends. Section
   6.4 is what the backend does about it: stop them, wait two seconds, and leave
   the interpreter behind - and, at `~Platform`, possibly CPython unfinalized -
   when one is stuck in a call that never returns.
-- **Starting an interpreter swapped the process's RAW allocator - fixed here.**
-  Every new interpreter's start ends in `_Py_ClearStandardStreamEncoding()`, which
-  in 3.12 switches the process-wide `PYMEM_DOMAIN_RAW` allocator to the default
-  and back even when it has nothing to free, while other own-GIL interpreters
-  read that allocator without a lock on other threads. A `Py_DEBUG` CPython
-  installs the default in two steps, so a block another isolate allocated or
-  freed in that moment went through the wrong allocator: its debug heap reported
-  a block freed by an interpreter that did not make it, then crashed, with more
-  than a couple of isolates starting at once. A release CPython writes identical
-  values and cannot fail that way - unless something wraps the RAW allocator
-  (debug hooks, tracemalloc, an embedder's own), and then it corrupts its heap
-  the same way. The overlay port's patch 0103 skips the switch when there is
-  nothing to free, which is always after the main interpreter's first start;
-  `cmake/vcpkg-ports/README.md` has the detail. `concurrency_test.cpp` is the
-  repro - eight threads making, using and destroying isolates at once - and every
-  concurrent case now runs at full thread count in Debug and Release alike.
 - **No daemon threads** also means library code that makes one fails:
   `subprocess.run(..., capture_output=True)` raises `RuntimeError: daemon threads
   are disabled in this interpreter`, because its Windows implementation reads the
@@ -1359,10 +1360,27 @@ decides how an embedding is shaped:
   sub-interpreter's first thread is `threading.main_thread()`, while signals are
   delivered only to the main interpreter: `signal.signal` raises `ValueError:
   signal only works in main thread of the main interpreter`, and asyncio's
-  Proactor loop used to fail for the same reason until the overlay port's patch
-  0102.
-- **Recursion through a builtin with a large frame** can overflow the stack
-  (section 7.2).
+  Proactor loop fails for the same reason without the overlay port's patch 0102
+  (still so in 3.14).
+- **A debug CPython needs big stacks.** Its evaluation loop, unoptimised, costs
+  about 50 KB of stack for every level of recursion through C - an import inside
+  an import, a callback into Python from a native - so a 1 MB thread holds about
+  fifteen, where a release build holds hundreds (section 7.2).
+- **A script can make interpreters of its own.** 3.14's
+  `concurrent.interpreters` works inside an isolate: a script can create, run
+  and close sub-interpreters on its own thread. They are not isolates - the
+  backend knows nothing of them - and what they allocate is charged to the
+  isolate whose thread made them.
+
+Two costs of 3.12 are gone. Starting an interpreter no longer swaps the
+process-wide RAW allocator: 3.12's `_Py_ClearStandardStreamEncoding()` did,
+unlocked, under other own-GIL interpreters, and a debug CPython's heap caught
+blocks going through the wrong allocator with more than a couple of isolates
+starting at once - the overlay port patched that (0103) until 3.13 removed the
+function. `concurrency_test.cpp`, eight threads making, using and destroying
+isolates at once, is the repro, and runs clean in Debug without it. And a
+recursion through a builtin with a large frame is a `RecursionError`, not a
+crash (section 7.2).
 
 ## 12. Python is not a sandbox
 
@@ -1373,7 +1391,8 @@ connect anywhere, `os.remove`, `os.system`, `subprocess.run`, read the
 environment, and `import` anything on `sys.path`. None of that goes through a
 binding the embedder wrote, and none of it can be taken away by one: removing
 `open` from `builtins` is undone by `import io`, and CPython's own documentation
-is plain that restricted execution is not a thing it offers.
+is plain that restricted execution is not a thing it offers. Since 3.14 an
+isolate has `ctypes` too (section 10.2), and with it any address in the process.
 
 What the backend does refuse - `fork`, `exec`, daemon threads, signal handlers -
 it refuses because an embedded engine must not do those things *to its host*, not
@@ -1384,14 +1403,16 @@ library is a substitute.
 
 ## 13. Build notes, and what an upgrade has to recheck
 
-- **The overlay port** (`cmake/vcpkg-ports/python3`) is the registry's port at
-  the manifest baseline with four patches of ours: 0100 makes `/GL` respect
-  `WholeProgramOptimization=false`, because `lld-link` cannot read LTCG objects
-  and `link.exe` reads only its own version's; 0101 builds the extension modules
-  in and applies the single-phase check to built-ins; 0102 lets asyncio's
-  Proactor loop be made in a sub-interpreter; 0103 stops every new interpreter
-  swapping the process-wide RAW allocator (section 11). Its README says how to re-apply
-  them when the baseline moves.
+- **The overlay port** (`cmake/vcpkg-ports/python3`) is vcpkg's own port for
+  3.14.7 - vcpkg master's, since the manifest baseline still has 3.12 - with five
+  patches of ours: 0100 makes `/GL` respect `WholeProgramOptimization=false`,
+  because `lld-link` cannot read LTCG objects and `link.exe` reads only its own
+  version's; 0101 builds the extension modules in; 0102 lets asyncio's Proactor
+  loop be made in a sub-interpreter; 0104 stops `_ssl` sharing two strings between
+  interpreters (section 10.2); 0105 widens a debug build's stack margin (section
+  7.2). A second overlay, `mpdecimal`, supplies the libmpdec the 3.14 port builds
+  `_decimal` against. Its README says what each patch is for, and how to
+  regenerate them when the version moves.
 - **The embedded standard library** (section 10.3) is compiled by the prefix's
   own `tools/python3/python.exe`, whatever version that is: nothing in
   `freeze_stdlib.py` or the CMake around it names one, configure refuses an
@@ -1407,31 +1428,37 @@ library is a substitute.
   and the list of files under `Lib` is a `CONFIGURE_DEPENDS` glob, so a module
   added there is picked up by the next build.
 - **The first configure builds CPython**, and with it OpenSSL, libffi, SQLite,
-  expat, liblzma and bzip2, for the triplet, plus a host CPython vcpkg needs to
-  build the static one. The port's README measured about twenty minutes on a
-  32-thread machine, nearly all of it OpenSSL and libffi; after that it is
-  binary-cached.
+  expat, liblzma, bzip2, zstd and mpdecimal, for the triplet, plus a host
+  CPython vcpkg needs to build the static one. The port's README measured about
+  twenty minutes on a 32-thread machine, nearly all of it OpenSSL and libffi;
+  after that it is binary-cached.
 - **Reaching past the limited API.** The backend uses things CPython does not
   promise to keep, and each is a line to check on an upgrade:
   - `_PyEval_AddPendingCall` - the per-interpreter pending call, exported by the
-    static library but declared only in internal headers, so its 3.12 signature
-    is declared by hand in `runtime.cpp`. The public `Py_AddPendingCall` goes to
-    the main interpreter.
-  - `PyThreadState::c_recursion_remaining`, set per isolate. 3.14 replaces the
-    count with stack-pointer checks.
+    static library but declared only in internal headers, so its signature is
+    declared by hand in `runtime.cpp`: 3.13's, with `flags` and a result of
+    0 (queued) or -1 (full). The public `Py_AddPendingCall` goes to the main
+    interpreter.
+  - `PyUnstable_ThreadState_SetStackProtection`, and `_PyOS_STACK_MARGIN_BYTES`
+    from an internal header, repeated in `runtime.cpp` - with patch 0105's debug
+    value.
   - asyncio's internals: `loop._ready`, `loop._scheduled`, `loop._run_once`,
     `loop._stopping`, `loop._thread_id`, `asyncio.events._set_running_loop`, and
     a future's `_state` and `_exception`. `PumpJobs` is built on them. So is
     the event-loop policy that falls back to the isolate's loop, which reads the
-    default policy's `_local._loop`.
-  - `threading._shutdown_locks`, which `~Isolate` empties once a script's
-    threads have ended, because a stop inside `Thread.join()` can leave one of
-    its locks held and `Py_EndInterpreter` would wait on it for ever.
+    default policy's `_local._loop` and is installed with
+    `asyncio.events._set_event_loop_policy`: 3.14 deprecates the public policy
+    functions, and **3.16 removes the policy system** - the fallback will need
+    another hook then.
   - `PyInterpreterState_ThreadHead` / `PyThreadState_Next`, to see a script's
     threads, and `PyDict_AddWatcher`, which ends a realm with its dictionary.
-  - `PyCodeObject::co_flags`, `PyTracebackObject`, `_PyType_Lookup`,
-    `_PyType_Name`, `_PyLong_Sign`.
-- **What 3.13 would change**, from the list above and section 11: sub-interpreter
-  arenas are freed; `_ctypes` and `_decimal` become multi-phase, and `_msi` is
-  gone; the C recursion count and the pending-call internals move. None of it
-  changes a public header.
+  - `PyCodeObject::co_flags`, `PyTracebackObject::tb_lasti`, `PyFrame_GetLasti`
+    with `PyCode_Addr2Location`, `_PyType_Lookup`, `_PyType_Name`.
+- **What the move from 3.12 to 3.14 changed**, for the record: the pending call's
+  signature; `c_recursion_remaining` gave way to the stack protection above;
+  `_Py_HashPointer` and `_PyLong_Sign` to `Py_HashPointer` and `PyLong_GetSign`;
+  the marshal format (version 5) and the bytecode magic, which the code cache's
+  header and `BackendBuildId` carry, so a 3.12 blob is refused and compiled
+  afresh; asyncio's policy functions; `threading._shutdown_locks`, gone with
+  3.13's C thread handles, which `~Isolate` used to empty; and the module list
+  and refusals of section 10.2. No public header of unibind changed.

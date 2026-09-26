@@ -30,8 +30,8 @@ const int sum = result->To<ub::Integer>()->Int32Value();   // 2
 | Public API | complete: values, objects, accessors, interceptors, symbols, classes with native state, exceptions, realms, promises and jobs, termination, binary data, structured clone, compiled-code caching, engine-fault reporting, a Chrome DevTools inspector |
 | V8 15.6 | JavaScript. Implements all of it |
 | SpiderMonkey 153.3.0esr | JavaScript. Implements all of it except two things its engine does not have: the near-heap-limit hook - a call to that one does not link, on purpose - and the inspector, which links and answers `Supported()` with false |
-| CPython 3.12.13 | **Python.** Implements all of it except the inspector, which links and answers `Supported()` with false; its engine-fault reporting covers running out of heap and a failed bring-up, not a crash inside CPython. Where Python and JavaScript disagree - `None` is `undefined`, a missing attribute is an error to Python - the choice is written down in [`docs/python.md`](docs/python.md) |
-| Tests | the JavaScript suite, written once against `ub::`: 413 cases, green on both JavaScript backends, every case compared backend against backend with no divergences. The CPython backend has a suite of its own, written the same way with Python as the script language: 269 cases, plus one opt-in stress case |
+| CPython 3.14.7 | **Python.** Implements all of it except the inspector, which links and answers `Supported()` with false; its engine-fault reporting covers running out of heap and a failed bring-up, not a crash inside CPython. Where Python and JavaScript disagree - `None` is `undefined`, a missing attribute is an error to Python - the choice is written down in [`docs/python.md`](docs/python.md) |
+| Tests | the JavaScript suite, written once against `ub::`: 413 cases, green on both JavaScript backends, every case compared backend against backend with no divergences. The CPython backend has a suite of its own, written the same way with Python as the script language: 271 cases, plus one opt-in stress case |
 | Not here | cross-realm access control - see [Limits](#limits) |
 
 > **Read [`docs/gotchas.md`](docs/gotchas.md) before you lose a day to one of
@@ -185,7 +185,7 @@ different number of times on each engine, so V8 counts 10999 and SpiderMonkey
 
 The CPython backend does not run that suite: its cases are JavaScript source as
 much as C++, and the parity comparison leaves this backend out. It runs
-`tests/python/` instead - **269 cases**, the figure `unibind_python_tests.exe`
+`tests/python/` instead - **271 cases**, the figure `unibind_python_tests.exe`
 reports, registered with CTest one per case under `python.` plus the whole suite
 in one process and two runs of the embedded standard library's cases out of
 process, one opt-in stress case that runs only when asked for by name, and seven
@@ -241,7 +241,7 @@ A python prefix installs the same way (`cmake --install build/python-x64 ...`)
 and adds `lib\unibind_backend_python.lib`. Like the other two it does not copy
 the engine: its package file names the vcpkg prefix the build used - by default
 `build/python-x64/vcpkg_installed/x64-windows-static`, inside the build tree - for
-`python312.lib` and the six libraries beside it, and `UNIBIND_PYTHON_DIR`
+`python314.lib` and the eight libraries beside it, and `UNIBIND_PYTHON_DIR`
 relocates it. The pure-Python standard library is in
 `unibind_backend_python.lib` itself, so a program linked against the prefix needs
 no `Lib/` either.
@@ -1365,10 +1365,10 @@ standard library, and nothing an embedder binds or removes takes them away.
 Run only Python you would run as the host process itself, or contain the
 process with the operating system ([`docs/python.md`](docs/python.md) section 12).
 
-**An isolate on CPython 3.12 costs memory the process never gets back** - about
-9 MB per isolate made and destroyed, because 3.12 does not free a
-sub-interpreter's arenas (3.13 does). Keep isolates for the life of a worker
-thread rather than making one per request.
+**An isolate costs tens of milliseconds to make.** CPython 3.14 gives an ended
+isolate's memory back (3.12 kept about 9 MB of each for good), but bringing an
+interpreter up is still work. Keep isolates for the life of a worker thread
+rather than making one per request.
 
 **A Python script's threads are second-class, and die with its isolate.** They
 share the isolate's GIL, so they run only while the isolate's thread is running

@@ -1110,9 +1110,16 @@ TEST_CASE("stack: runaway recursion is a RecursionError, not a crash, on threads
 TEST_CASE("stack: a smaller stackLimitBytes stops native recursion sooner") {
     int roomy = 0;
     int tight = 0;
+    // A debug CPython's evaluation loop costs some twenty times the stack a
+    // level, so a debug build gets a limit four times the size.
+#if defined(NDEBUG)
+    constexpr std::size_t TIGHT = std::size_t{256} * 1024;
+#else
+    constexpr std::size_t TIGHT = std::size_t{1024} * 1024;
+#endif
     OnThreadWithStack(4 * 1024 * 1024, [&] {
         roomy = DepthReached({});
-        tight = DepthReached({.stackLimitBytes = 256 * 1024});
+        tight = DepthReached({.stackLimitBytes = TIGHT});
     });
     CAPTURE(roomy);
     CAPTURE(tight);

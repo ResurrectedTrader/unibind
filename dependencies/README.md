@@ -155,7 +155,7 @@ Upstream: `ResurrectedTrader/v8-static-win`, release `v8-15.6.8`, asset
 the version directory holds one subdirectory per architecture and flavour
 (`x86-release/`, `x64-release/`, `x86-debug/`, …), so several sit side by side.
 
-## CPython 3.12.13 — from vcpkg, not from here
+## CPython 3.14.7 — from vcpkg, not from here
 
 Nothing is fetched into this directory for the python backend. There is no
 published static CPython to fetch: vcpkg's `python3` port builds one, and on the
@@ -166,19 +166,21 @@ SpiderMonkey tree has no use for.
 
 | | |
 |---|---|
-| where | `<build>/vcpkg_installed/<triplet>/` - `include/python3.12/`, `lib/python312.lib`, `debug/lib/python312_d.lib`, `tools/python3/Lib/` |
-| link | `python312.lib` (81 MB, x64 Release), which holds CPython and the standard library's extension modules, **plus** zlib, OpenSSL, libffi, SQLite, expat, liblzma and bzip2 as vcpkg's own static libraries beside it |
-| include | `include/python3.12/` |
+| where | `<build>/vcpkg_installed/<triplet>/` - `include/python3.14/`, `lib/python314.lib`, `debug/lib/python314_d.lib`, `tools/python3/Lib/` |
+| link | `python314.lib` (88 MB, x64 Release), which holds CPython and the standard library's extension modules, **plus** zlib, OpenSSL, libffi, SQLite, expat, liblzma, bzip2, libmpdec and zstd as vcpkg's own static libraries beside it |
+| include | `include/python3.14/` |
 | required defines | `Py_NO_LINK_LIB`, so `pyconfig.h` does not name an import library that does not exist (the backend sets it; a consumer includes no CPython header) |
 | built with | vcpkg's MSBuild build of CPython's `PCbuild`, on the machine that configured, `/MT` |
-| extra system libs | `version ws2_32 shlwapi pathcch bcrypt advapi32 user32 kernel32 ole32 oleaut32 iphlpapi rpcrt4 crypt32 winmm msi cabinet wbemuuid propsys` |
+| extra system libs | `version ws2_32 shlwapi pathcch bcrypt advapi32 user32 kernel32 ole32 oleaut32 iphlpapi rpcrt4 crypt32 winmm wbemuuid propsys` |
 | at build time | `tools/python3/python.exe`, the same CPython for the same architecture, which compiles `tools/python3/Lib` into the backend (`UNIBIND_PYTHON_EMBED_STDLIB`) |
 | at run time | nothing: the pure-Python standard library is embedded in the backend. With `UNIBIND_PYTHON_EMBED_STDLIB` off, `tools/python3/Lib` - see `docs/python.md` section 10.3 |
-| when | the first configure of a triplet: CPython and its six third-party libraries from source, about twenty minutes on a 32-thread machine; then vcpkg's binary cache |
+| when | the first configure of a triplet: CPython and its eight third-party libraries from source, about twenty minutes on a 32-thread machine; then vcpkg's binary cache |
 
 The overlay port in `cmake/vcpkg-ports/python3` is what makes that library
 usable here: the registry's port gives up on extension modules for a static
 build, and builds its Release objects with `/GL`, which `lld-link` cannot read.
+It is vcpkg master's 3.14.7 port - the manifest baseline still has 3.12 - and
+`cmake/vcpkg-ports/mpdecimal` supplies the libmpdec it needs.
 `cmake/vcpkg-ports/README.md` has each change and why.
 
 `UNIBIND_PYTHON_DIR` points at a static CPython you already have, laid out as

@@ -12,10 +12,10 @@
 add_executable(unibind_python_repl main.cpp host.cpp host.h demo.py)
 target_link_libraries(unibind_python_repl PRIVATE unibind::unibind)
 
-# Every isolate costs CPython 3.12 memory it never gives back (docs/python.md),
-# and a 32-bit program that makes a few hundred of them - as this one does - can
-# fill the 2 GB a process gets by default. Large-address-aware, it gets 4 GB on
-# 64-bit Windows.
+# Large-address-aware, a 32-bit process gets 4 GB of address space on 64-bit
+# Windows instead of 2 GB, for nothing. It is no longer a necessity: CPython 3.12
+# kept every isolate's memory for good, and a few hundred isolates filled 2 GB;
+# 3.14 gives it back (docs/python.md, section 11).
 if(UNIBIND_ARCH STREQUAL "x86")
     target_link_options(unibind_python_repl PRIVATE "/LARGEADDRESSAWARE")
 endif()
