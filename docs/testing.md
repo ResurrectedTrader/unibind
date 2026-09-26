@@ -923,7 +923,7 @@ differences between engines to be written around.
 
 ### What it covers
 
-261 cases, 120490 assertions in a Release x64 run, and one stress case that runs
+269 cases, 120679 assertions in a Release x64 run, and one stress case that runs
 only when asked for (`-tc="stress:*" --no-skip`): it makes isolates until
 `Isolate::New` answers empty, which it must do rather than crash or hang. The
 suite links `tests/support/allocations.cpp`, the shared suite's replacement of
@@ -945,6 +945,7 @@ backend's own C++ heap exactly and make its allocations fail on purpose.
 | binary data | `binary_test.cpp` | buffers copied and zero-filled, a buffer too large to allocate, `bytearray` and `bytes` as buffers, every element type both ways and every conversion at its boundaries, views that do not fit refused, views sharing a buffer, the script-side `TypedArray` and `DataView`, a buffer shrunk under a view, a conversion that shrinks it mid-write, an export pinning its size, a view keeping its buffer alive |
 | structured clone | `serialization_test.cpp` | every primitive exactly, NaN and `-0` to the bit, a lone surrogate, containers and their keys, shared references and cycles, views sharing their buffer, what cannot be cloned failing the whole call, a plain object, blobs crossing isolates and threads, damaged and well-framed-but-foreign blobs refused, deep nesting on the heap, a graph owing nothing to the realm that wrote it |
 | code cache | `codecache_test.cpp` | the build id, a round trip, scripts with and without a tail, no blob and bad blobs compiling the source, a blob for other source, a payload re-framed for other source, tracebacks from a cached script, a blob used in another isolate on another thread, top-level `await`, a script outliving its realm, a syntax error beside a foreign blob |
+| the embedded standard library | `stdlib_embedded_test.cpp` | modules served by CPython's `FrozenImporter` with `sys.path` empty and no module having a file, packages with an empty `__path__`, what the build left out absent; `asyncio`, `json`, `re`, `ssl`, `sqlite3`, `decimal`, `collections`, `dataclasses`, `typing`, `pathlib` and `email` each doing something; isolates on six threads unmarshalling the one table at once; a traceback into it naming `<frozen json.decoder>` and the line; isolate start-up time, measured. Every case asks which standard library the run should see and checks that one, and CTest runs them twice more out of process: from a copy of the suite alone in an empty directory, and with `UNIBIND_PYTHON_HOME` set, which must win |
 | the standard library | `stdlib_test.cpp` | every extension module built in and none loaded from a `.pyd`; the modules that refuse an isolate refusing cleanly, and their pure-Python fallbacks; `ssl`/`hashlib`, `sqlite3`, the three compressors, `socket`/`select`, `unicodedata`, `queue`, `uuid`, `zoneinfo`, `multiprocessing`, `winsound`; `asyncio.run`, a TCP echo over streams, and event loops in two isolates at once |
 | handles, roots and realms | `lifetimes_test.cpp` | every handle one reference given back when its scope closes, ten thousand in one frame, escapes through frames, a handle as the only owner; frame and root exhaustion yielding empty handles with `MemoryError` and nothing leaked; `Global`s moved, duplicated, compared with no scope open, and reset; a realm surviving script that empties its globals four ways, and a copied globals dict confusing no later realm; a released realm brought back whole by a callback; `Context` reference counting, nested `ContextScope`s; ten thousand realms and many scripts leaving the C++ heap where it was; templates going with their realm; a `bytearray` too large to allocate refused without the `SystemError` CPython 3.12 used to print |
 | natives and their calls | `lifetimes_natives_test.cpp` | a native in a cycle through containers and closures, one resurrected by `__del__`, one whose destructor gives back its own realm and root, destructors at teardown that run script reaching other natives or make new ones, one shared native in two isolates on two threads, an instance dying on a script's thread (given back on the isolate's), a receiver dropped by script mid-call or kept in a `Global`, a throw after building values, fifty levels of native into Python into native, interceptor hooks that let go of their object |
@@ -961,7 +962,8 @@ backend's own C++ heap exactly and make its allocations fail on purpose.
   protocol names; what Python does with them on an instance - nothing - is not
   asserted (`docs/python.md` section 2).
 - **A bring-up that fails.** A `Platform` is made once per process, before the
-  suite, so a missing standard library cannot be provoked in it.
+  suite, so a missing standard library cannot be provoked in it - and with the
+  standard library embedded there is none to miss.
 - **Any regular run.** The suite passes Release and Debug on x64 and Release on
   x86, run by hand; no CI job runs it.
 

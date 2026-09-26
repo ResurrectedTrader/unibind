@@ -5,7 +5,7 @@ one that matters most is SpiderMonkey, which is MPL-2.0.** Linking it into a
 proprietary product is allowed and always was - what MPL asks for is that the
 *engine's* source stays available, not yours. **CPython is permissive** (the PSF
 license), but a program linked with that backend carries seven more libraries
-and ships the standard library's source beside it, and each wants its notice;
+and CPython's standard library compiled into it, and each wants its notice;
 and because the CPython here is patched, the PSF license asks for a summary of
 the changes.
 
@@ -138,9 +138,11 @@ are covered:
 
 - **The engine, linked in**: `python312.lib`, which is CPython with the standard
   library's C extension modules built into it.
-- **The standard library, beside it**: the `Lib/` directory a program has to ship
-  (`docs/python.md` section 10) is CPython's own Python source, distributed as
-  source.
+- **The standard library, compiled into it**: CPython's own Python source,
+  byte-compiled at build time and embedded in the backend library
+  (`docs/python.md` section 10.3) - or, built with `UNIBIND_PYTHON_EMBED_STDLIB`
+  off, the `Lib/` directory a program ships beside it, distributed as source.
+  Either way it is CPython's, under the same license.
 
 What you owe:
 

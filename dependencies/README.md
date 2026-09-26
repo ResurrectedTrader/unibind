@@ -172,7 +172,8 @@ SpiderMonkey tree has no use for.
 | required defines | `Py_NO_LINK_LIB`, so `pyconfig.h` does not name an import library that does not exist (the backend sets it; a consumer includes no CPython header) |
 | built with | vcpkg's MSBuild build of CPython's `PCbuild`, on the machine that configured, `/MT` |
 | extra system libs | `version ws2_32 shlwapi pathcch bcrypt advapi32 user32 kernel32 ole32 oleaut32 iphlpapi rpcrt4 crypt32 winmm msi cabinet wbemuuid propsys` |
-| at run time | the pure-Python standard library, `tools/python3/Lib` - see `docs/python.md` section 10 |
+| at build time | `tools/python3/python.exe`, the same CPython for the same architecture, which compiles `tools/python3/Lib` into the backend (`UNIBIND_PYTHON_EMBED_STDLIB`) |
+| at run time | nothing: the pure-Python standard library is embedded in the backend. With `UNIBIND_PYTHON_EMBED_STDLIB` off, `tools/python3/Lib` - see `docs/python.md` section 10.3 |
 | when | the first configure of a triplet: CPython and its six third-party libraries from source, about twenty minutes on a 32-thread machine; then vcpkg's binary cache |
 
 The overlay port in `cmake/vcpkg-ports/python3` is what makes that library

@@ -31,17 +31,17 @@ const int sum = result->To<ub::Integer>()->Int32Value();   // 2
 | V8 15.6 | JavaScript. Implements all of it |
 | SpiderMonkey 153.3.0esr | JavaScript. Implements all of it except two things its engine does not have: the near-heap-limit hook - a call to that one does not link, on purpose - and the inspector, which links and answers `Supported()` with false |
 | CPython 3.12.13 | **Python.** Implements all of it except the inspector, which links and answers `Supported()` with false; its engine-fault reporting covers running out of heap and a failed bring-up, not a crash inside CPython. Where Python and JavaScript disagree - `None` is `undefined`, a missing attribute is an error to Python - the choice is written down in [`docs/python.md`](docs/python.md) |
-| Tests | the JavaScript suite, written once against `ub::`: 413 cases, green on both JavaScript backends, every case compared backend against backend with no divergences. The CPython backend has a suite of its own, written the same way with Python as the script language: 261 cases, plus one opt-in stress case |
+| Tests | the JavaScript suite, written once against `ub::`: 413 cases, green on both JavaScript backends, every case compared backend against backend with no divergences. The CPython backend has a suite of its own, written the same way with Python as the script language: 269 cases, plus one opt-in stress case |
 | Not here | cross-realm access control - see [Limits](#limits) |
 
 > **Read [`docs/gotchas.md`](docs/gotchas.md) before you lose a day to one of
 > them.** It is ninety-odd traps indexed by what you were doing when it bit you,
-> and it opens with eighteen you will not diagnose from the symptom: seventeen
+> and it opens with nineteen you will not diagnose from the symptom: eighteen
 > give a *wrong answer and no error at all* - a `TypeError` that arrives as a
 > `SyntaxError`, a cached blob that runs a different script than the one you
 > asked for, a promise continuation that simply never happens, an empty list
 > that a Python callback treats as false - and the
-> eighteenth gives a loud error that blames something else entirely. Ten
+> nineteenth gives a loud error that blames something else entirely. Ten
 > minutes there is the best-value reading in this repository.
 
 **The JavaScript engines do not have the same rules, and the stricter one is
@@ -160,11 +160,13 @@ longer on a smaller one. After that vcpkg's binary cache makes it seconds.
 `-DUNIBIND_PYTHON_DIR=...` points at a static CPython you already have, with
 vcpkg's installed layout, and vcpkg is then not asked for one.
 
-The built program reads CPython's pure-Python standard library (`Lib/`) from disk
-when the `Platform` is made - from `UNIBIND_PYTHON_HOME`, a `python-stdlib`
-directory beside the executable, or where the build found it, in that order - so
-it runs from the build tree and needs `Lib/` shipped beside it anywhere else
-([`docs/python.md`](docs/python.md) section 10).
+CPython's pure-Python standard library (`Lib/`) is compiled into the backend as
+well: the build byte-compiles it with vcpkg's own interpreter for the triplet and
+embeds it as CPython's frozen-module table, so **the built program is one
+executable with nothing to ship beside it**. A directory still wins when there is
+one, so that a developer can run against sources on disk: `UNIBIND_PYTHON_HOME`,
+or a `python-stdlib` directory beside the executable.
+`-DUNIBIND_PYTHON_EMBED_STDLIB=OFF` reads `Lib/` from disk instead ([`docs/python.md`](docs/python.md) section 10.3).
 
 This preset also builds [`examples/python_repl`](examples/python_repl/README.md),
 an interactive Python prompt whose host bindings exercise most of the binding
@@ -183,11 +185,11 @@ different number of times on each engine, so V8 counts 10999 and SpiderMonkey
 
 The CPython backend does not run that suite: its cases are JavaScript source as
 much as C++, and the parity comparison leaves this backend out. It runs
-`tests/python/` instead - **261 cases**, the figure `unibind_python_tests.exe`
+`tests/python/` instead - **269 cases**, the figure `unibind_python_tests.exe`
 reports, registered with CTest one per case under `python.` plus the whole suite
-in one process, one opt-in stress case that runs only when asked for by name,
-and six more tests for the example REPL under the label
-`example`. [`tests/python/README.md`](tests/python/README.md) says what it covers.
+in one process and two runs of the embedded standard library's cases out of
+process, one opt-in stress case that runs only when asked for by name, and seven
+more tests for the example REPL under the label `example`. [`tests/python/README.md`](tests/python/README.md) says what it covers.
 
 CI pins `windows-2022` and MSVC **14.44** on purpose: that is the toolset both
 engine archives were built with, and therefore the one a consumer links
@@ -240,8 +242,9 @@ and adds `lib\unibind_backend_python.lib`. Like the other two it does not copy
 the engine: its package file names the vcpkg prefix the build used - by default
 `build/python-x64/vcpkg_installed/x64-windows-static`, inside the build tree - for
 `python312.lib` and the six libraries beside it, and `UNIBIND_PYTHON_DIR`
-relocates it. The standard library is not in the prefix either; a program that
-links it ships `Lib/` itself.
+relocates it. The pure-Python standard library is in
+`unibind_backend_python.lib` itself, so a program linked against the prefix needs
+no `Lib/` either.
 
 ## Using it from your project
 
@@ -1255,7 +1258,7 @@ boundary, which is the whole point of turning it on.
 ## Gotchas worth knowing before you start
 
 [`docs/gotchas.md`](docs/gotchas.md) is the collection - ninety-odd of them,
-grouped by what you were doing, and opening with the eighteen you will not
+grouped by what you were doing, and opening with the nineteen you will not
 diagnose from the symptom. Five belong here because they are about *getting the
 build to work at all*, which is where a new consumer meets them.
 
@@ -1289,12 +1292,14 @@ headers replaces your `operator new` silently (`dependencies/README.md`). This
 tree's own test suite hits this; `tests/CMakeLists.txt` says what it does about
 it and why.
 
-**A CPython program runs where it was built and nowhere else, until you ship
-`Lib/`.** The engine is linked in; its pure-Python standard library is read from
-disk when the `Platform` is made, and the last place it looks is the build tree.
-Copied to another machine the program reports `EngineFault::Fatal` and makes no
-isolate. Put vcpkg's `tools/python3/Lib` beside the executable as
-`python-stdlib`, or point `UNIBIND_PYTHON_HOME` at a copy.
+**A CPython program takes a standard library directory over its own.** The
+pure-Python standard library is embedded in the backend, and a program needs
+nothing beside it - but `UNIBIND_PYTHON_HOME`, or a `python-stdlib` directory
+beside the executable, still wins, on a user's machine as on yours. One left
+pointing at another CPython's `Lib` gives the program another version's modules.
+Built with `UNIBIND_PYTHON_EMBED_STDLIB` off, the program instead reads `Lib/`
+from disk, last from the build tree, and runs where it was built and nowhere
+else until you ship `Lib/` beside it as `python-stdlib`.
 
 ## What the name claims
 
@@ -1361,7 +1366,7 @@ Run only Python you would run as the host process itself, or contain the
 process with the operating system ([`docs/python.md`](docs/python.md) section 12).
 
 **An isolate on CPython 3.12 costs memory the process never gets back** - about
-9.5 MB per isolate made and destroyed, because 3.12 does not free a
+9 MB per isolate made and destroyed, because 3.12 does not free a
 sub-interpreter's arenas (3.13 does). Keep isolates for the life of a worker
 thread rather than making one per request.
 
@@ -1435,5 +1440,5 @@ you link has a license of its own. SpiderMonkey's MPL-2.0 is the one to read
 closely: it permits linking into a proprietary product and asks that the
 *engine's* source stay available. CPython's PSF license is permissive, but a
 program linked with this backend also carries OpenSSL, libffi, SQLite, expat,
-liblzma, bzip2 and zlib, and ships the standard library's source beside it.
+liblzma, bzip2 and zlib, and CPython's standard library compiled into it.
 [`docs/licensing.md`](docs/licensing.md) says what all of that means in practice.

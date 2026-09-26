@@ -18,13 +18,14 @@ build\python-x64\tests\python\Release\unibind_python_tests.exe   # the whole sui
 ```
 
 The first configure of a triplet builds CPython through vcpkg; see the root
-README. The test binary finds the standard library where the build left it, so
-nothing has to be copied to run it from the build tree.
+README. The standard library is embedded in the test binary, as in any program
+built on the backend, so it runs from anywhere with nothing beside it;
+`UNIBIND_PYTHON_HOME` pointed at a `Lib` directory runs it against that instead.
 
 ## What a run looks like
 
-**261 cases** - the figure the test binary reports, and the one to compare a run
-against (120490 assertions in a Release x64 run, most of them the lifetime and
+**269 cases** - the figure the test binary reports, and the one to compare a run
+against (120679 assertions in a Release x64 run, most of them the lifetime and
 teardown cases counting references in loops; it differs by build and
 architecture and is not the number to compare). `-ltc` lists them,
 `-tc="objects:*"` runs one area.
@@ -33,7 +34,7 @@ One more case is registered but skipped unless asked for by name:
 `stress: making isolates until memory runs out fails cleanly`, which makes
 isolates until `Isolate::New` answers empty. It is too slow and too hard on the
 machine for every run - it runs until memory does - so run it deliberately: `unibind_python_tests -tc="stress:*" --no-skip`. It is
-not among the 261, and CTest does not register it.
+not among the 269, and CTest does not register it.
 
 Under CTest each case is a test of its own, named `python.<area>: <what it
 pins>`, with the label `suite`, plus one more:
@@ -41,13 +42,16 @@ pins>`, with the label `suite`, plus one more:
 | test | what it is |
 |---|---|
 | `python.whole-suite-in-one-process` | every case in one process, which is the only thing that catches a case quietly depending on another |
+| `python.stdlib-embedded.runs-alone-from-an-empty-directory` | the `stdlib embedded` cases from a copy of the test binary alone in an empty directory, with `UNIBIND_PYTHON_HOME` unset: nothing on disk to find (`standalone.cmake`) |
+| `python.stdlib-embedded.unibind-python-home-still-wins` | the same cases with `UNIBIND_PYTHON_HOME` set to the build's `Lib`, which must win over the embedded standard library |
 
-The example REPL registers six more, under the label `example`:
+The example REPL registers seven more, under the label `example`:
 `ctest -C Release -L example` runs its `--demo`, a script with arguments, a
 script that raises and the traceback it prints, a runaway loop stopped by
-`--timeout`, and a piped interactive session
+`--timeout`, a piped interactive session, and the REPL copied alone into an
+empty directory
 ([`examples/python_repl/README.md`](../../examples/python_repl/README.md)). A
-plain `ctest` runs both labels: 268 tests.
+plain `ctest` runs both labels: 279 tests.
 
 A full run takes about two and a half minutes (Release x64), most of it cases
 that stop scripts from other threads, make and tear down many isolates, or wait
@@ -71,6 +75,7 @@ Each file is one area, and every case name starts with its area:
 | `serialization_test.cpp` | `clone`: structured clone |
 | `codecache_test.cpp` | `codecache`: the compiled-code cache |
 | `stdlib_test.cpp` | `stdlib`: the extension modules built into the static CPython, and the ones an isolate refuses |
+| `stdlib_embedded_test.cpp` | `stdlib embedded`: the pure-Python standard library compiled into the backend, served as frozen modules - and a directory given winning over it |
 | `lifetimes_test.cpp` | `lifetimes`: handles, frames, `Global`s and realms counted exactly - references taken and given back, frame and root exhaustion, a realm surviving `globals().clear()` and a copied dict, many realms and scripts leaving the C++ heap where it was, and the `bytearray` that could not be allocated |
 | `lifetimes_natives_test.cpp` | `lifetimes`: when a `Class<T>` native is destroyed - cycles, resurrection, destructors that run script or make natives at teardown, an instance dying on a script's thread - and how long a callback's values live |
 | `teardown_test.cpp` | `teardown`: isolates in sequence and in parallel giving back all they took, threads a script started (stopped by `TerminateExecution`, stopped and waited for by `~Isolate`, left behind when stuck), stops that land on code holding things, and asyncio's current loop after `asyncio.run` |
@@ -85,6 +90,9 @@ support.h/.cpp      the fixture (an isolate, a scope, a realm, entered) and the
                     Eval helpers: Eval, EvalInt, EvalText, EvalTruth, EvalError
 data_support.h      what the binary-data, clone and code-cache cases share
 lifetimes_support.h what the lifetime and teardown cases share
+standalone.cmake    runs a program from a copy of it alone in an empty
+                    directory, UNIBIND_PYTHON_HOME unset: the embedded
+                    standard library's out-of-process test
 ../support/allocations.cpp   the shared suite's replacement of the global
                     allocation operators, linked in here too: the lifetime
                     cases count the backend's own C++ heap with it and make
@@ -114,7 +122,7 @@ lifetimes_support.h what the lifetime and teardown cases share
   is where a race inside CPython shows up: `concurrency_test.cpp` found the one
   patch 0103 fixes (`docs/python.md` section 11), and would not have at two
   threads.
-- **Size isolate counts for x86**, where every isolate keeps about 9.5 MB of a
+- **Size isolate counts for x86**, where every isolate keeps about 9 MB of a
   32-bit address space for good; the cases that make many scale down there.
 - **A case written against a promise stays red rather than weakened**, as in the
   shared suite.
