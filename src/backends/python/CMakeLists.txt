@@ -93,8 +93,24 @@ add_custom_command(
     COMMENT "Freezing the CPython ${UNIBIND_PYTHON_VERSION} standard library into the backend"
     VERBATIM)
 
-target_sources(unibind_backend_python PRIVATE "${frozenSource}" freeze_stdlib.py)
+# The generated source is compiled on its own and its object put into the
+# backend library, which is the same archive as compiling it there directly.
+# What that buys is EXPORT_COMPILE_COMMANDS OFF: the `tidy-python` compile
+# database never lists it, so clang-tidy is not asked to lint some ten megabytes
+# of `#embed`-ed bytecode and a table this tree does not write by hand - nor to
+# open a file that, in a tree nothing has been built in yet, does not exist.
+add_library(unibind_backend_python_stdlib OBJECT "${frozenSource}")
+target_include_directories(unibind_backend_python_stdlib SYSTEM PRIVATE "${UNIBIND_PYTHON_INCLUDE_DIR}")
+target_include_directories(unibind_backend_python_stdlib PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(unibind_backend_python_stdlib PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN Py_NO_LINK_LIB)
+set_target_properties(unibind_backend_python_stdlib PROPERTIES EXPORT_COMPILE_COMMANDS OFF)
+if(UNIBIND_LTO)
+    # The root CMakeLists.txt sets this on the backend; its objects follow it.
+    set_property(TARGET unibind_backend_python_stdlib PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+endif()
 set_source_files_properties("${frozenSource}" PROPERTIES OBJECT_DEPENDS "${frozenBlob}")
+
+target_sources(unibind_backend_python PRIVATE $<TARGET_OBJECTS:unibind_backend_python_stdlib> freeze_stdlib.py)
 set_source_files_properties(freeze_stdlib.py PROPERTIES HEADER_FILE_ONLY ON)
 target_compile_definitions(unibind_backend_python PRIVATE UNIBIND_PYTHON_EMBED_STDLIB=1)
 
