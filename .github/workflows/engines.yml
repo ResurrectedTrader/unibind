@@ -1,0 +1,430 @@
+# The suite, against each engine, on a machine that had none of them.
+#
+# One workflow for the three backends, one section per engine below. They are
+# not one matrix: V8 and SpiderMonkey download a prebuilt engine and have a
+# debug-engine job and checked-build tests; V8 alone has the canary; CPython is
+# built by vcpkg, needs vcpkg's binary cache carried between runs, and has its
+# own suite. A backend matrix would be every step behind an `if:`. Each job's
+# name is what it was when each engine had a file of its own, so the check names
+# on a pull request - and anything that requires them - are unchanged.
+#
+# Neither prebuilt engine is in the repository or committed anywhere: the build
+# fetches the published release it is pinned to the first time a tree
+# configures, exactly as it does for a contributor who has just cloned, and
+# CPython is built by vcpkg the same way. That is the whole setup step, and it
+# is why these jobs exist: if they pass, a stranger's clone builds too.
+#
+# What every job needs from the runner, in the order it would break:
+#
+#   * MSVC toolset 14.44 or newer. The engine was built against that STL and
+#     calls helpers that ship only in its libcpmt.lib; an older one fails at
+#     link with undefined __std_* symbols. CMakeLists.txt refuses at configure
+#     time with that message rather than letting the link discover it.
+#   * The ClangCL toolset. The tree is built with clang-cl and MSVC's own
+#     cl.exe does not accept the public headers - see headers.yml. The image
+#     ships it, but the first step of each job says so in a sentence rather
+#     than letting the configure fail with an unset toolset.
+#   * vcpkg on the image, for doctest - and for CPython and everything it
+#     links, in the python jobs. VCPKG_INSTALLATION_ROOT is what the Windows
+#     images set; the root CMakeLists.txt takes it as UNIBIND_VCPKG_ROOT.
+#
+# Both architectures, as separate jobs. They are not the same build with a
+# different flag: a handle is 12 bytes in one and 16 in the other, the backend's
+# frame and TryCatch are different sizes and are static_asserted against numbers
+# that differ per architecture, and each links its own engine build. One
+# passing says nothing about the other.
+#
+# The image and the generator are written down, not detected. `windows-latest`
+# is Visual Studio 2026 now, and MSVC 14.51 with it: the suite passes there, but
+# 14.44 is the toolset both engines were built with - each archive's
+# toolset.txt says so - and therefore the one a consumer links against. A CI
+# that follows `windows-latest` tests a toolchain nobody chose, and announces
+# the move as "could not find any instance of Visual Studio", which reads like a
+# broken runner. Pinning makes a toolchain upgrade a commit.
+#
+# `windows-2022` will be retired one day, and that is what the non-blocking
+# V8 canary below is for: it builds the same tree on whatever `windows-latest`
+# has become, so the replacement image is known to work before the pinned one
+# disappears.
+#
+# The suite label is what is run: `-L suite` leaves out the benchmark (timing on
+# a shared runner measures the runner) and the parity comparison (it needs a
+# second backend's build tree, which no one job has).
+
+name: engines
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ----------------------------------------------------------------------------
+  # V8
+  # ----------------------------------------------------------------------------
+  #
+  # The same suite against the other engine, which is the backend this library is
+  # developed against and the one its green cases are counted on.
+  #
+  # It is the same job as SpiderMonkey's with a bigger download and a much
+  # bigger link: the published V8 build is 263 MB compressed (277 MB for x64) and
+  # unpacks to a 1.2 GB monolithic archive, and every executable here links the
+  # whole of it. Two consequences worth knowing before reading a failure:
+  #
+  #   * Disk. The engine alone is about 1.4 GB unpacked, and the linked test and
+  #     benchmark executables are several hundred MB more. The first step prints
+  #     the free space, because "the disk filled" and "the build is broken" look
+  #     the same in a linker error.
+  #   * The 64-bit linker. A 32-bit lld-link cannot get through an archive this
+  #     size and does not say so - it reports every engine symbol as undefined,
+  #     as though the library had not been passed at all. CMake picks the 64-bit
+  #     host tools by default, which is why this job says nothing about it and an
+  #     MSBuild consumer has to (see unibind.props).
+  #
+  # Both architectures, as separate jobs, for the reasons given at the top -
+  # and one more that is V8's alone: the x64 monolith carries PartitionAlloc's
+  # allocator shim and the x86 one does not, so the two links do not even agree on
+  # who owns `operator new`. See docs/gotchas.md.
+  #
+  # Everything else - the toolset floor, ClangCL, vcpkg, and why the image and the
+  # generator are written down rather than detected - is as the top of this
+  # file explains.
+  #
+  # The canary is the other half of that pin. It is the same build on
+  # `windows-latest`, whatever that has become, and it cannot fail this workflow:
+  # its job is to say, on an otherwise green run, whether the tree still builds on
+  # the image the pinned one will eventually be replaced by. Today that is Visual
+  # Studio 2026 with MSVC 14.51, which does pass - but 14.44 is what both engines
+  # were built with, so it is the pinned job that decides whether this is green.
+  # It builds x86 only: it is a question about the image, not about the tree, and
+  # one architecture answers it - x86 being the one a consumer ships today.
+
+  v8-suite:
+    name: the suite against V8 15.6.8 (${{ matrix.arch }})
+    runs-on: windows-2022
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86
+            platform: Win32
+            triplet: x86-windows-static
+          - arch: x64
+            platform: x64
+            triplet: x64-windows-static
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Report the toolsets and the free space, and refuse an image with no ClangCL
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $install = & $vswhere -latest -products * -property installationPath
+          Get-ChildItem "$install\VC\Tools\MSVC" -Directory | ForEach-Object { "toolset $($_.Name)" }
+          if (-not (Test-Path "$install\VC\Tools\Llvm\x64\bin\clang-cl.exe")) {
+              throw "no ClangCL toolset on this image; the tree does not build with cl.exe"
+          }
+          Get-PSDrive -PSProvider FileSystem |
+              Select-Object Name, @{n = 'FreeGB'; e = { [math]::Round($_.Free / 1GB, 1) } } |
+              Format-Table | Out-String
+
+      - name: Configure, which fetches the engine
+        run: >
+          cmake -S . -B build/v8
+          -G "Visual Studio 17 2022" -A ${{ matrix.platform }} -T ClangCL
+          -DUNIBIND_BACKEND=v8
+          -DUNIBIND_VCPKG_ROOT="${env:VCPKG_INSTALLATION_ROOT}"
+          -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}
+          -DVCPKG_HOST_TRIPLET=x64-windows
+
+      - name: Build
+        run: cmake --build build/v8 --config Release
+
+      - name: Run the suite
+        run: ctest --test-dir build/v8 -C Release -L suite --output-on-failure
+
+  v8-debug-engine:
+    # The suite again, in Debug, against the engine's debug build. A consumer's
+    # Debug build links that engine, and it is far stricter than the release
+    # one: V8 checks every handle cast and every API precondition with a DCHECK,
+    # and a release engine quietly tolerates what they catch. Every assertion
+    # found that way so far has been a backend bug, invisible in Release
+    # (docs/testing.md, "A Debug build is green"), so the suite has to run here,
+    # on the push, rather than only compile. It also runs the checked-build
+    # tests (label "checked"), which exist only in Debug. x86 only: the question
+    # is the engine's assertions, and one architecture asks it.
+    name: the suite in Debug against the debug V8 15.6.8 (x86)
+    runs-on: windows-2022
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Report the free space
+        run: |
+          Get-PSDrive -PSProvider FileSystem |
+              Select-Object Name, @{n = 'FreeGB'; e = { [math]::Round($_.Free / 1GB, 1) } } |
+              Format-Table | Out-String
+
+      - name: Configure, which fetches the debug engine
+        run: >
+          cmake -S . -B build/v8-debug
+          -G "Visual Studio 17 2022" -A Win32 -T ClangCL
+          -DUNIBIND_BACKEND=v8
+          -DUNIBIND_ENGINE_FLAVOR=debug
+          -DUNIBIND_VCPKG_ROOT="${env:VCPKG_INSTALLATION_ROOT}"
+          -DVCPKG_TARGET_TRIPLET=x86-windows-static
+          -DVCPKG_HOST_TRIPLET=x64-windows
+
+      - name: Build
+        run: cmake --build build/v8-debug --config Debug
+
+      - name: Run the suite and the checked-build tests
+        run: ctest --test-dir build/v8-debug -C Debug -L "suite|checked" --output-on-failure
+
+  v8-canary:
+    name: canary - the same suite on whatever windows-latest is now
+    runs-on: windows-latest
+    continue-on-error: true
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      # The generator is asked for here, and only here: the point of this job is
+      # to build on an image nobody pinned, so it cannot name a Visual Studio.
+      # vswhere knows the installed major version; cmake knows what the
+      # generator for that major is called.
+      - name: Ask the image what it is
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $install = & $vswhere -latest -products * -property installationPath
+          $version = & $vswhere -latest -products * -property installationVersion
+          $major = $version.Split('.')[0]
+          $generator = [regex]::Match((cmake --help | Out-String), "Visual Studio $major \d{4}").Value
+          if (-not $generator) { throw "cmake knows no generator for Visual Studio $major" }
+          if (-not (Test-Path "$install\VC\Tools\Llvm\x64\bin\clang-cl.exe")) {
+              throw "no ClangCL toolset on this image; the tree does not build with cl.exe"
+          }
+          Get-ChildItem "$install\VC\Tools\MSVC" -Directory | ForEach-Object { "toolset $($_.Name)" }
+          "generator $generator"
+          "UNIBIND_GENERATOR=$generator" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Configure, which fetches the engine
+        run: >
+          cmake -S . -B build/canary
+          -G "${env:UNIBIND_GENERATOR}" -A Win32 -T ClangCL
+          -DUNIBIND_BACKEND=v8
+          -DUNIBIND_VCPKG_ROOT="${env:VCPKG_INSTALLATION_ROOT}"
+          -DVCPKG_TARGET_TRIPLET=x86-windows-static
+          -DVCPKG_HOST_TRIPLET=x64-windows
+
+      - name: Build
+        run: cmake --build build/canary --config Release
+
+      - name: Run the suite
+        run: ctest --test-dir build/canary -C Release -L suite --output-on-failure
+
+  # ----------------------------------------------------------------------------
+  # SpiderMonkey
+  # ----------------------------------------------------------------------------
+  #
+  # The published SpiderMonkey release is about 140 MB down and 640 MB unpacked,
+  # fetched the first time a tree configures. Otherwise these jobs are exactly
+  # what the top of this file describes.
+
+  spidermonkey-suite:
+    name: the suite against SpiderMonkey 153.3.0esr (${{ matrix.arch }})
+    runs-on: windows-2022
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86
+            platform: Win32
+            triplet: x86-windows-static
+          - arch: x64
+            platform: x64
+            triplet: x64-windows-static
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Report the toolsets, and refuse an image with no ClangCL
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $install = & $vswhere -latest -products * -property installationPath
+          Get-ChildItem "$install\VC\Tools\MSVC" -Directory | ForEach-Object { "toolset $($_.Name)" }
+          if (-not (Test-Path "$install\VC\Tools\Llvm\x64\bin\clang-cl.exe")) {
+              throw "no ClangCL toolset on this image; the tree does not build with cl.exe"
+          }
+
+      # No engine step: configuring fetches the pinned release into
+      # dependencies/ when it is not already there, which on a fresh runner it
+      # never is.
+      - name: Configure, which fetches the engine
+        run: >
+          cmake -S . -B build/spidermonkey
+          -G "Visual Studio 17 2022" -A ${{ matrix.platform }} -T ClangCL
+          -DUNIBIND_BACKEND=spidermonkey
+          -DUNIBIND_VCPKG_ROOT="${env:VCPKG_INSTALLATION_ROOT}"
+          -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}
+          -DVCPKG_HOST_TRIPLET=x64-windows
+
+      - name: Build
+        run: cmake --build build/spidermonkey --config Release
+
+      - name: Run the suite
+        run: ctest --test-dir build/spidermonkey -C Release -L suite --output-on-failure
+
+  spidermonkey-debug-engine:
+    # The suite again, in Debug, against the engine's debug build. A consumer's
+    # Debug build links that engine, and it is far stricter than the release
+    # one: SpiderMonkey asserts every realm, compartment and zone crossing,
+    # and a release engine quietly tolerates what they catch. Every assertion
+    # found that way so far has been a backend bug, invisible in Release
+    # (docs/testing.md, "A Debug build is green"), so the suite has to run here,
+    # on the push, rather than only compile. It also runs the checked-build
+    # tests (label "checked"), which exist only in Debug. x86 only: the question
+    # is the engine's assertions, and one architecture asks it.
+    name: the suite in Debug against the debug SpiderMonkey 153.3.0esr (x86)
+    runs-on: windows-2022
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Report the free space
+        run: |
+          Get-PSDrive -PSProvider FileSystem |
+              Select-Object Name, @{n = 'FreeGB'; e = { [math]::Round($_.Free / 1GB, 1) } } |
+              Format-Table | Out-String
+
+      - name: Configure, which fetches the debug engine
+        run: >
+          cmake -S . -B build/spidermonkey-debug
+          -G "Visual Studio 17 2022" -A Win32 -T ClangCL
+          -DUNIBIND_BACKEND=spidermonkey
+          -DUNIBIND_ENGINE_FLAVOR=debug
+          -DUNIBIND_VCPKG_ROOT="${env:VCPKG_INSTALLATION_ROOT}"
+          -DVCPKG_TARGET_TRIPLET=x86-windows-static
+          -DVCPKG_HOST_TRIPLET=x64-windows
+
+      - name: Build
+        run: cmake --build build/spidermonkey-debug --config Debug
+
+      - name: Run the suite and the checked-build tests
+        run: ctest --test-dir build/spidermonkey-debug -C Debug -L "suite|checked" --output-on-failure
+
+  # ----------------------------------------------------------------------------
+  # CPython
+  # ----------------------------------------------------------------------------
+  #
+  # The CPython backend's suite, its examples, and the stand-alone runs that prove
+  # a program needs nothing beside its executable.
+  #
+  # The engine is not downloaded the way V8 and SpiderMonkey are: it is built by
+  # vcpkg, from the overlay port in cmake/vcpkg-ports, the first time a tree
+  # configures with UNIBIND_BACKEND=python. That is the same thing that happens on
+  # a contributor's machine, which is the point of running it here - but from
+  # nothing it is a long build: CPython twice (the target triplet's static one and
+  # the host one vcpkg needs to build it), OpenSSL, libffi, SQLite, expat, liblzma,
+  # bzip2, zstd, mpdecimal and zlib. So vcpkg's binary cache is kept between runs:
+  #
+  #   * VCPKG_BINARY_SOURCES points vcpkg at a directory in the workspace, and
+  #     actions/cache carries that directory from one run to the next.
+  #   * The key is the triplet plus a hash of everything that decides what vcpkg
+  #     builds - the manifest (its baseline) and every overlay port. A change to
+  #     either misses, and the restore-keys prefix still brings back the last
+  #     cache of that triplet, so a patch to CPython rebuilds CPython and not
+  #     OpenSSL: vcpkg keys each package by its own ABI hash and takes what still
+  #     matches.
+  #   * It is saved as soon as the configure has installed the packages, and even
+  #     if a later step fails - a red test should not cost the next run the build.
+  #     Not after a failed configure: a partial cache saved under the final key
+  #     would keep a complete one from ever being saved under it.
+  #
+  # What the job needs from the runner is what the other engines' jobs need
+  # (the top of this file): MSVC 14.44 or newer, the ClangCL toolset, and vcpkg at
+  # VCPKG_INSTALLATION_ROOT - here with the manifest's builtin-baseline in its
+  # history, because the ports this backend pulls in come from there.
+  #
+  # Both architectures in Release, as separate jobs for the reason the top of
+  # this file gives, and x64 in Debug: a debug CPython (Py_DEBUG) checks its own
+  # heap and its reference counts, and every concurrency bug this backend has had
+  # inside CPython was found there first (docs/python.md, section 11).
+  #
+  # The labels run are "suite" and "example": the suite's cases, the whole suite
+  # in one process, the stand-alone copies of the test program and the REPL, and
+  # the REPL example's own tests. The opt-in stress cases are skipped by default.
+
+  python-suite:
+    name: the suite against CPython (${{ matrix.arch }} ${{ matrix.config }})
+    runs-on: windows-2022
+    # From an empty cache the vcpkg step alone is most of an hour.
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            platform: x64
+            triplet: x64-windows-static
+            config: Release
+          - arch: x86
+            platform: Win32
+            triplet: x86-windows-static
+            config: Release
+          - arch: x64
+            platform: x64
+            triplet: x64-windows-static
+            config: Debug
+    env:
+      VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}\vcpkg-archives,readwrite
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Report the toolsets, and refuse an image with no ClangCL
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $install = & $vswhere -latest -products * -property installationPath
+          Get-ChildItem "$install\VC\Tools\MSVC" -Directory | ForEach-Object { "toolset $($_.Name)" }
+          if (-not (Test-Path "$install\VC\Tools\Llvm\x64\bin\clang-cl.exe")) {
+              throw "no ClangCL toolset on this image; the tree does not build with cl.exe"
+          }
+          New-Item -ItemType Directory -Force -Path "${{ github.workspace }}\vcpkg-archives" | Out-Null
+
+      - name: Restore vcpkg's binary cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: vcpkg-archives
+          key: vcpkg-python-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json', 'cmake/vcpkg-ports/**') }}
+          restore-keys: |
+            vcpkg-python-${{ matrix.triplet }}-
+
+      # Configuring is what builds the engine: the root CMakeLists.txt turns on
+      # the manifest's `python` feature and the overlay ports for this backend,
+      # and the vcpkg toolchain installs them before the project is generated.
+      - name: Configure, which builds CPython
+        id: configure
+        run: >
+          cmake -S . -B build/python
+          -G "Visual Studio 17 2022" -A ${{ matrix.platform }} -T ClangCL
+          -DUNIBIND_BACKEND=python
+          -DUNIBIND_VCPKG_ROOT="${env:VCPKG_INSTALLATION_ROOT}"
+          -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}
+          -DVCPKG_HOST_TRIPLET=x64-windows
+
+      - name: Save vcpkg's binary cache
+        if: always() && steps.configure.outcome == 'success' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: vcpkg-archives
+          key: vcpkg-python-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json', 'cmake/vcpkg-ports/**') }}
+
+      - name: Build
+        run: cmake --build build/python --config ${{ matrix.config }}
+
+      - name: Run the suite and the examples
+        run: ctest --test-dir build/python -C ${{ matrix.config }} -L "suite|example" --output-on-failure

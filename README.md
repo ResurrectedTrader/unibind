@@ -197,16 +197,16 @@ against. Following `windows-latest` would test a toolchain nobody chose. A
 non-blocking canary does build on `windows-latest` - Visual Studio 2026, MSVC
 14.51 - and currently passes, which is how the pin will eventually be moved.
 
-Each JavaScript engine's workflow runs the suite three times, as separate jobs: x86 and x64
+One workflow, `engines.yml`, runs every engine's suite, a section per engine.
+Each JavaScript engine's suite runs three times, as separate jobs: x86 and x64
 in Release, because the handle is a different size in the two, the backends'
 frames are different sizes, and the x64 V8 archive brings a different
 allocator - so one of them passing says nothing about the other; and x86 in
 Debug against the engine's debug build, whose assertions have caught backend
 bugs no release engine reports (`docs/testing.md`).
 
-The CPython backend's workflow (`python.yml`) runs its suite and the example's
-checks the same way - x64 and x86 in Release, and x64 in Debug against a debug
-CPython.
+The CPython backend's jobs run its suite and the example's checks the same
+way - x64 and x86 in Release, and x64 in Debug against a debug CPython.
 
 Then install a prefix for consumers:
 
