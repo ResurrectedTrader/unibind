@@ -27,8 +27,8 @@
 # debug CRT (/MTd), `release` the release ones (/MT). Nothing else about the
 # prefix differs.
 #
-# Tests are not built here. The suite runs on every push in v8.yml and
-# spidermonkey.yml, which is where a tag's commit was already judged; this job
+# Tests are not built here. The suite runs on every push in engines.yml,
+# which is where a tag's commit was already judged; this job
 # only has to produce what that commit installs.
 
 name: release
