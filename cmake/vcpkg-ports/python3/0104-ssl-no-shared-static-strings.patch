@@ -1,0 +1,36 @@
+diff --git a/Modules/_ssl.c b/Modules/_ssl.c
+index 5258df3..7e977a3 100644
+--- a/Modules/_ssl.c
++++ b/Modules/_ssl.c
+@@ -5977,24 +5977,16 @@ _ssl_nid2obj_impl(PyObject *module, int nid)
+ static PyObject*
+ certEncodingType(DWORD encodingType)
+ {
+-    static PyObject *x509_asn = NULL;
+-    static PyObject *pkcs_7_asn = NULL;
+-
+-    if (x509_asn == NULL) {
+-        x509_asn = PyUnicode_InternFromString("x509_asn");
+-        if (x509_asn == NULL)
+-            return NULL;
+-    }
+-    if (pkcs_7_asn == NULL) {
+-        pkcs_7_asn = PyUnicode_InternFromString("pkcs_7_asn");
+-        if (pkcs_7_asn == NULL)
+-            return NULL;
+-    }
++    /* vcpkg: made on every call, not cached in function-level statics. The
++       cache was shared by every interpreter in the process: the first one to
++       ask made the strings, in its own allocator, and every other one then
++       counted references on them - from other threads, under other GILs, and
++       after the interpreter that owned the memory had ended. */
+     switch(encodingType) {
+     case X509_ASN_ENCODING:
+-        return Py_NewRef(x509_asn);
++        return PyUnicode_FromString("x509_asn");
+     case PKCS_7_ASN_ENCODING:
+-        return Py_NewRef(pkcs_7_asn);
++        return PyUnicode_FromString("pkcs_7_asn");
+     default:
+         return PyLong_FromLong(encodingType);
+     }

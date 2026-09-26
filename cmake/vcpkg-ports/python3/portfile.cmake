@@ -77,6 +77,11 @@ list(APPEND PATCHES 0101-builtin-extension-modules.patch)
 # "main thread" - which the first thread of a sub-interpreter is, to threading - and
 # signal.set_wakeup_fd refuses outside the main interpreter. Skip it there.
 list(APPEND PATCHES 0102-asyncio-proactor-in-subinterpreters.patch)
+# unibind: _ssl's certEncodingType (ssl.enum_certificates, which create_default_context calls
+# on Windows) cached two strings in function-level statics: made in whichever interpreter
+# asked first, then shared - reference counts and all - by every interpreter on every thread,
+# and used after the first one ended. Make them on every call instead.
+list(APPEND PATCHES 0104-ssl-no-shared-static-strings.patch)
 
 # unibind: on Windows a static core cannot load a .pyd (every one links python3X.dll), so the
 # extension modules are compiled into the static library instead, as built-in modules. Each one
