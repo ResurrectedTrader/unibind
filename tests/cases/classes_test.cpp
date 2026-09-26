@@ -373,10 +373,9 @@ UNIBIND_TEST_CASE(CLASSES, "classes: an instance-template accessor is an own pro
         CHECK(ub_test::EvalTruth(fixture.context, with("return o.hasOwnProperty('value');")));
         CHECK(ub_test::EvalText(fixture.context, with("return Object.keys(o).join();")) == "value");
         CHECK(ub_test::EvalText(fixture.context, with("return JSON.stringify(o);")) == R"({"value":7})");
-        CHECK(ub_test::EvalInt(fixture.context,
-                               with("const copy = {};"
-                                    " for (const k in o) { if (o.hasOwnProperty(k)) copy[k] = o[k]; }"
-                                    " return copy.value;")) == 7);
+        CHECK(ub_test::EvalInt(fixture.context, with("const copy = {};"
+                                                     " for (const k in o) { if (o.hasOwnProperty(k)) copy[k] = o[k]; }"
+                                                     " return copy.value;")) == 7);
         CHECK(ub_test::EvalInt(fixture.context, with("o.value = 12; return o.value;")) == 12);
     }
     CHECK_FALSE(ub_test::EvalTruth(fixture.context, "Object.hasOwn(Owned.prototype, 'value')"));

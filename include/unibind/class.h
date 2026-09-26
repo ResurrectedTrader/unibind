@@ -405,7 +405,9 @@ class Class {
     /// The cost is per instance: SpiderMonkey defines each member on each
     /// object as it is made, where the prototype holds it once. Declare here
     /// only what has to be own.
-    [[nodiscard]] ObjectTemplate InstanceTemplate() const { return ObjectTemplate(detail::ClassInstanceTemplate(rec_)); }
+    [[nodiscard]] ObjectTemplate InstanceTemplate() const {
+        return ObjectTemplate(detail::ClassInstanceTemplate(rec_));
+    }
 
     /// Statics take a plain function callback: there is no instance to unwrap.
     const Class& StaticMethod(std::string_view name, FunctionCallback callback, CallbackData data = {}) const {
