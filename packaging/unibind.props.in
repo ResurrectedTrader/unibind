@@ -31,9 +31,11 @@
                             x64-windows-static or x86-windows-static triplet
                             directory, with lib/, debug/lib/ and
                             tools/python3/Lib. Which libraries under it are
-                            linked is recorded in unibind-engine-python.props;
-                            docs/python.md says what a program needs at run
-                            time (the standard library).
+                            linked is recorded in unibind-engine-python.props.
+                            The pure-Python standard library is compiled into
+                            unibind_backend_python.lib, so a program needs
+                            nothing of it at run time; docs/python.md section
+                            10.3 says where it comes from and what overrides it.
 
   The engine defaults are the paths this prefix was built against - one small
   unibind-engine-<backend>.props per backend installed, imported by wildcard

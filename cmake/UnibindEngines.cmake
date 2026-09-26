@@ -270,10 +270,12 @@ endfunction()
 # `_asyncio`, `_overlapped` and the rest; cmake/vcpkg-ports/README.md has the
 # list - and nothing ever looks for a `.pyd`.
 #
-# What a program does need at run time is the pure-Python half of the standard
-# library, `tools/python3/Lib`. `UNIBIND_PYTHON_STDLIB` records where it is, and
-# the backend bakes that in as its default - see docs/python.md, "Where the
-# standard library comes from".
+# The pure-Python half of the standard library, `tools/python3/Lib`, is compiled
+# into the backend (`UNIBIND_PYTHON_EMBED_STDLIB`, on by default), so a program
+# needs nothing of it at run time. `UNIBIND_PYTHON_STDLIB` records where it is:
+# the source of the embedded copy, and - built with embedding off - the default
+# the backend reads from disk. See docs/python.md, "Where the standard library
+# comes from".
 #
 # UNIBIND_PYTHON_DIR, when set, points at another prefix with the same layout
 # (include/python3.X/, lib/, debug/lib/, tools/python3/Lib/), and vcpkg is not
