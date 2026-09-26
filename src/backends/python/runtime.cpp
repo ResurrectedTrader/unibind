@@ -1364,34 +1364,18 @@ bool StopScriptThreads(Isolate& isolate, bool wait) noexcept {
 namespace {
 
 /// Once no thread a script started is left: forget the stop that was for
-/// them, and what `Py_EndInterpreter` would otherwise wait on.
+/// them.
+///
+/// `Py_EndInterpreter` joins every non-daemon `threading.Thread` that is left,
+/// and every one has ended by now - this runs only once the thread ending the
+/// interpreter is its last. Under 3.12 the join went through a Python lock per
+/// thread in `threading._shutdown_locks`, which a stop inside `Thread.join()`
+/// could leave acquired, and this emptied the list; from 3.13 a thread is
+/// joined through its C thread handle, which a stop cannot leave half-done.
 void FinishWithScriptThreads(RuntimeState* runtime) noexcept {
     if (runtime != nullptr) {
         runtime->stopThreads.store(false, std::memory_order_release);
         Py_CLEAR(runtime->threadStop);
-    }
-    // `Py_EndInterpreter` joins every non-daemon `threading.Thread` by
-    // acquiring and releasing each one's lock in `threading._shutdown_locks`.
-    // Every such thread has ended by now - this runs only once the thread
-    // ending the interpreter is its last - but a lock can still be held: a
-    // stop that landed inside `Thread.join()`, between its `acquire()` and its
-    // `release()`, leaves the lock acquired, because a stopped thread runs no
-    // `except` block (the one CPython has there for exactly this, for
-    // Ctrl-C). Acquiring it again would wait forever. Nothing is left to wait
-    // for, so the list is dropped.
-    PyObject* pending = PyErr_GetRaisedException();
-    if (PyObject* modules = PyImport_GetModuleDict(); modules != nullptr) {
-        if (PyObject* module = PyDict_GetItemString(modules, "threading"); module != nullptr) {  // borrowed
-            PyObject* locks = PyObject_GetAttrString(module, "_shutdown_locks");
-            if (locks != nullptr && PySet_Check(locks)) {
-                (void)PySet_Clear(locks);
-            }
-            Py_XDECREF(locks);
-        }
-    }
-    PyErr_Clear();
-    if (pending != nullptr) {
-        PyErr_SetRaisedException(pending);
     }
 }
 

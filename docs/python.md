@@ -733,10 +733,13 @@ because they reach past the script that was stopped:
 - **A standard-library lock can be left held.** A stop that lands between a
   lock's `acquire()` and its `release()` leaves it acquired, because the
   `except` block the standard library has there - written for Ctrl-C - does not
-  run. The case that shows it is `Thread.join()`: stopped inside it, the thread's
-  bookkeeping is never finished, and `Thread.is_alive()` answers true for a
-  thread that has ended. `~Isolate` knows about that one lock and does not wait
-  on it (section 6.4); a lock a script's own code held is the script's to lose.
+  run. Under 3.12 `Thread.join()` was the case that showed it: stopped inside it,
+  the thread's bookkeeping was never finished, `Thread.is_alive()` answered true
+  for a thread that had ended, and `~Isolate` had to drop the lock so as not to
+  wait on it. 3.13 moved joining into C thread handles, which a stop does not
+  leave half-done (`teardown: TerminateExecution stops a script's threads too,
+  and an interrupt waits for the isolate's thread`). A lock a script's own code
+  held is still the script's to lose.
 
 A native that returns the instant it sees `IsExecutionTerminating()` could beat
 the stopping thread's pending call to the next check and let the script run on,

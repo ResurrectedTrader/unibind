@@ -1086,9 +1086,8 @@ within limits that are easy to miss:
 and that includes code nobody thinks of as the script's. A weakref callback does
 not run, so a `WeakSet` whose members went during a stop goes on counting them.
 An `except` or `finally` that would have released a lock does not run, so a lock
-can stay held: a stop inside `Thread.join()` leaves the thread's bookkeeping
-unfinished, and `is_alive()` answers true for a thread that has ended. After a
-cancel, do not trust state that a stopped script was in the middle of changing.
+a script's code held can stay held. After a cancel, do not trust state that a
+stopped script was in the middle of changing.
 
 ### No daemon threads, so some of the standard library fails
 

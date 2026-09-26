@@ -491,12 +491,12 @@ t.start()
     // The interrupt was asked for while only the script's thread ran Python; it
     // waited for the isolate's thread - out the stop, too - and ran there.
     CHECK(interruptThread.load() == std::this_thread::get_id());
-    // The thread is gone: its count stands still while this thread sleeps.
-    // (Not `t.is_alive()`: the stop landed inside `t.join()`, between the
-    // lock's acquire and its release, and a stopped thread runs no `except` -
-    // so the bookkeeping `join` does after is not done, and `is_alive` cannot
-    // tell. The isolate's teardown copes with that lock; see runtime.cpp.)
+    // The thread is gone: its count stands still while this thread sleeps,
+    // and `is_alive` says so. (Under 3.12 it could not: the stop landed inside
+    // `t.join()` between a Python lock's acquire and its release, and the
+    // bookkeeping after was never done. 3.13 joins through a C thread handle.)
     CHECK(EvalTruth(f.context, "import time\nbefore = state['n']\ntime.sleep(0.05)\nstate['n'] == before"));
+    CHECK(EvalTruth(f.context, "not t.is_alive()"));
     // Stopped straight away, so its `finally` never ran.
     CHECK_FALSE(EvalTruth(f.context, "state['ended']"));
     // New threads run normally after the cancel.

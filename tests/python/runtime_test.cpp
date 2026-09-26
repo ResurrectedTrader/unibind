@@ -1399,11 +1399,16 @@ TEST_CASE("lifetime: many isolates in sequence and on many threads leak nothing 
     // memory is a noisy measure - the heap's own fragmentation, and other
     // processes pressing on this one's working set - so the bound is an
     // average of a megabyte, well clear of the noise and well under what a
-    // kept interpreter costs.
-    constexpr std::int64_t MEGABYTE = std::int64_t{1024} * 1024;
-    CHECK(plain.processBytes < MEGABYTE);
-    CHECK(busy.processBytes < MEGABYTE);
-    CHECK(threaded.processBytes < MEGABYTE);
+    // kept interpreter costs (3.5 MB, release). A debug heap is noisier - the
+    // same runs swing a megabyte either way - so there it is two.
+#if defined(NDEBUG)
+    constexpr std::int64_t BOUND = std::int64_t{1024} * 1024;
+#else
+    constexpr std::int64_t BOUND = std::int64_t{2} * 1024 * 1024;
+#endif
+    CHECK(plain.processBytes < BOUND);
+    CHECK(busy.processBytes < BOUND);
+    CHECK(threaded.processBytes < BOUND);
 }
 
 // ---------------------------------------------------------------------------
