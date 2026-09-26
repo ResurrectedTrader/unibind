@@ -224,7 +224,7 @@ TEST_CASE("lifetimes: a Global outlives its scope, survives a move, and Duplicat
     CHECK(RefCount(f.context, "thing") == base + 2);
     moved = std::move(second);  // drops what `moved` held, takes second's
     CHECK(RefCount(f.context, "thing") == base + 1);
-    auto& same = moved;  // through a reference, so that it is the self-move it looks like at run time
+    auto& same = moved;       // through a reference, so that it is the self-move it looks like at run time
     moved = std::move(same);  // a no-op
     CHECK(RefCount(f.context, "thing") == base + 1);
     {
@@ -398,7 +398,8 @@ TEST_CASE("lifetimes: a copy of a realm's globals that outlives the realm confus
         {
             auto dying = ub::Context::New(f.iso());
             REQUIRE(dying.has_value());
-            Run(*dying, "import builtins\nbuiltins.kept.append(dict(globals()))\nbuiltins.kept.append(globals().copy())");
+            Run(*dying,
+                "import builtins\nbuiltins.kept.append(dict(globals()))\nbuiltins.kept.append(globals().copy())");
         }
         Run(f.context, "gc.collect()");
         auto fresh = ub::Context::New(f.iso());
@@ -461,17 +462,17 @@ TEST_CASE("lifetimes: Context copies, moves and assignments count their referenc
         REQUIRE(made.has_value());
         ub::Context a = *made;
         made.reset();
-        ub::Context b = a;               // copy
-        ub::Context c = std::move(b);    // move
-        CHECK(b.IsEmpty());              // NOLINT(bugprone-use-after-move)
+        ub::Context b = a;             // copy
+        ub::Context c = std::move(b);  // move
+        CHECK(b.IsEmpty());            // NOLINT(bugprone-use-after-move)
         ub::Context d;
-        d = c;                           // copy-assign into empty
+        d = c;  // copy-assign into empty
         const ub::Context& self = d;
-        d = self;                        // self-assign
-        d = a;                           // same realm, other object
+        d = self;  // self-assign
+        d = a;     // same realm, other object
         ub::Context e = *ub::Context::New(f.iso());
-        e = a;                           // drops e's own realm, which goes now
-        a = std::move(c);                // move-assign over the same realm
+        e = a;             // drops e's own realm, which goes now
+        a = std::move(c);  // move-assign over the same realm
         CHECK(EvalInt(d, "7 * 6") == 42);
         Run(e, "shared = 'yes'");
         CHECK(EvalText(a, "shared") == "yes");

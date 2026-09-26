@@ -110,8 +110,8 @@ void ReadReceiverName(const ub::Local<ub::Name>& /*property*/, const ub::Propert
     if (!name) {
         return;
     }
-    const std::string text = py_test::TextOf(info.GetContext(), *name) +
-                             (info.Holder().StrictEquals(info.This()) ? "/self" : "/inherited");
+    const std::string text =
+        py_test::TextOf(info.GetContext(), *name) + (info.Holder().StrictEquals(info.This()) ? "/self" : "/inherited");
     (void)info.GetReturnValue().Set(text);
 }
 
@@ -301,7 +301,8 @@ TEST_CASE("templates: a function template is a type with a prototype, statics an
 
     CHECK(EvalText(f.context, "Widget.__name__") == "Widget");
     CHECK(EvalText(f.context, "Widget.__module__") == "unibind");
-    CHECK(EvalTruth(f.context, "w = Widget()\nw.constructor is Widget and type(w) is Widget and isinstance(w, unibind.Object)"));
+    CHECK(EvalTruth(f.context,
+                    "w = Widget()\nw.constructor is Widget and type(w) is Widget and isinstance(w, unibind.Object)"));
     CHECK(EvalTruth(f.context, "w.__proto__ is Widget.prototype and 'constructor' not in list(Widget.prototype)"));
     CHECK(EvalText(f.context, "Widget.KIND + ' ' + Widget.create()") == "widget-kind hello");
     CHECK(EvalText(f.context, "w.name + ' ' + w.whoAmI()") == "widget widget");
@@ -474,11 +475,14 @@ TEST_CASE("templates: a Symbol.iterator method written for JavaScript iterates f
 
     CHECK(EvalText(f.context, "repr(list(Range()))") == "[0, 1, 2]");
     CHECK(EvalInt(f.context, "sum(x for x in Range())") == 3);
-    CHECK(EvalTruth(f.context, "it = iter(Range())\nnext(it) == 0 and next(it) == 1 and next(it) == 2 and next(it, 'end') == 'end'"));
+    CHECK(EvalTruth(
+        f.context,
+        "it = iter(Range())\nnext(it) == 0 and next(it) == 1 and next(it) == 2 and next(it, 'end') == 'end'"));
     // The method is listed as the symbol it was declared under.
     const auto prototype = Eval(f.context, "Range.prototype").To<ub::Object>();
     REQUIRE(prototype.has_value());
-    const auto names = prototype->GetOwnPropertyNames(f.context, {.includeNonEnumerable = true, .includeSymbols = true});
+    const auto names =
+        prototype->GetOwnPropertyNames(f.context, {.includeNonEnumerable = true, .includeSymbols = true});
     REQUIRE(names.has_value());
     REQUIRE(names->Length() == 2);
     CHECK(names->Get(f.context, 1U)->IsSymbol());

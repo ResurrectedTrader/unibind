@@ -85,7 +85,9 @@ void AnswerAs(const ub::CallbackInfo& info) {
     } else if (kind == "string") {
         (void)result.Set("text");
     } else if (kind == "lossy") {
-        (void)result.Set(std::string_view("a\xff" "b"));
+        (void)result.Set(
+            std::string_view("a\xff"
+                             "b"));
     } else if (kind == "argument") {
         result.Set(info[1]);
     }
@@ -208,7 +210,9 @@ TEST_CASE("functions: every way of answering a call reaches Python as the value 
     CHECK(EvalTruth(f.context, "answer('undefined') is None"));
     CHECK(EvalTruth(f.context, "answer('nothing') is None"));
     CHECK(EvalText(f.context, "answer('string')") == "text");
-    CHECK(EvalText(f.context, "answer('lossy')") == "a\xEF\xBF\xBD" "b");
+    CHECK(EvalText(f.context, "answer('lossy')") ==
+          "a\xEF\xBF\xBD"
+          "b");
     CHECK(EvalTruth(f.context, "l = [1]\nanswer('argument', l) is l"));
 }
 
@@ -294,8 +298,8 @@ TEST_CASE("functions: native calls a function script wrote, and constructs a cla
     REQUIRE(sum.has_value());
     CHECK(sum->To<ub::Integer>()->Int32Value() == 42);
 
-    const auto point = Eval(f.context, "class Point:\n    def __init__(self, x, y):\n        self.x = x\nPoint")
-                           .To<ub::Function>();
+    const auto point =
+        Eval(f.context, "class Point:\n    def __init__(self, x, y):\n        self.x = x\nPoint").To<ub::Function>();
     REQUIRE(point.has_value());
     const auto made = point->NewInstance(f.context, arguments);
     REQUIRE(made.has_value());
@@ -312,7 +316,8 @@ TEST_CASE("functions: a native throw is a Python exception, catchable in script"
     Fixture f;
     Expose(f.context, "throws", NewFunction(f.context, &Throws));
     CHECK(EvalError(f.context, "throws()") == "unibind.RangeError: out of range, natively");
-    CHECK(EvalText(f.context, "try:\n    throws()\nexcept ValueError as e:\n    r = type(e).__name__ + ': ' + str(e)\nr") ==
+    CHECK(EvalText(f.context,
+                   "try:\n    throws()\nexcept ValueError as e:\n    r = type(e).__name__ + ': ' + str(e)\nr") ==
           "RangeError: out of range, natively");
     CHECK_FALSE(f.iso().HasPendingException());
     CHECK(EvalInt(f.context, "1 + 1") == 2);
@@ -381,7 +386,9 @@ TEST_CASE("functions: the value lives exactly as long as the function, cycles in
     // Held through the function alone.
     CHECK(EvalTruth(f.context, "del box\ngc.collect()\nw() is not None and holder() is w()"));
     // A value that refers back to its function does not keep the pair alive.
-    CHECK(EvalTruth(f.context, "w().fn = holder\nfw = weakref.ref(holder)\ndel holder\ngc.collect()\nw() is None and fw() is None"));
+    CHECK(
+        EvalTruth(f.context,
+                  "w().fn = holder\nfw = weakref.ref(holder)\ndel holder\ngc.collect()\nw() is None and fw() is None"));
 
     // And a Global over the value outlives the function, not the other way round.
     ub::Global<ub::Value> kept;

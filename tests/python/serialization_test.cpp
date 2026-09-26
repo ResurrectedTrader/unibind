@@ -6,10 +6,10 @@
 // bytes. Equal bytes mean the same values *and* the same shape - every shared
 // reference and every cycle where it was.
 
-#include <cmath>
-#include <cstring>
 #include <array>
 #include <atomic>
+#include <cmath>
+#include <cstring>
 #include <random>
 #include <string>
 #include <thread>
@@ -17,13 +17,13 @@
 #include "data_support.h"
 
 using py_test::Eval;
-using py_test::Run;
 using py_test::EvalAs;
 using py_test::EvalInt;
 using py_test::EvalText;
 using py_test::EvalTruth;
 using py_test::Fixture;
 using py_test::Give;
+using py_test::Run;
 using py_test::TextOf;
 
 namespace {
@@ -90,10 +90,26 @@ struct RoundTrip {
 TEST_CASE("clone: every primitive round-trips exactly") {
     Fixture f;
     Run(f.context, "import unibind");
-    for (const char* source : {"None", "unibind.null", "True", "False", "0", "-1", "2**53 + 1", "2**200", "-(2**200)",
-                               "1.5", "float('inf')", "float('-inf')", "5e-324", "''", "'text'",
-                               "'emoji \\U0001F600 and \\u00e9'", "'lone \\ud800 surrogate'", "b''",
-                               "b'\\x00\\xff'", "bytearray(b'\\x01\\x02')"}) {
+    for (const char* source : {"None",
+                               "unibind.null",
+                               "True",
+                               "False",
+                               "0",
+                               "-1",
+                               "2**53 + 1",
+                               "2**200",
+                               "-(2**200)",
+                               "1.5",
+                               "float('inf')",
+                               "float('-inf')",
+                               "5e-324",
+                               "''",
+                               "'text'",
+                               "'emoji \\U0001F600 and \\u00e9'",
+                               "'lone \\ud800 surrogate'",
+                               "b''",
+                               "b'\\x00\\xff'",
+                               "bytearray(b'\\x01\\x02')"}) {
         const std::string where = source;
         CAPTURE(where);
         const RoundTrip trip(f, source);
@@ -136,7 +152,8 @@ TEST_CASE("clone: containers round-trip, keys of every clonable kind included") 
         const RoundTrip trip(f, source);
         if (trip.exposed) {
             // () is a singleton, and a clone of it is that same ()
-            CHECK(EvalTruth(trip.other, "type(clone) is type(src) and clone == src and (clone is not src or clone == ())"));
+            CHECK(EvalTruth(trip.other,
+                            "type(clone) is type(src) and clone == src and (clone is not src or clone == ())"));
         }
     }
 }
@@ -205,9 +222,13 @@ readonly = TypedArray('uint16', b'\x01\x02\x03\x04', 2)
         return;
     }
     CHECK(EvalTruth(views.other, "all(v.buffer is clone[3] for v in clone[:3]) and clone[3] is not src[3]"));
-    CHECK(EvalTruth(views.other, "clone[1].setUint16(0, 0xBEEF)\nclone[2][2:4].tolist() == [0xBE, 0xEF] and src[3][2] == 2"));
-    CHECK(EvalTruth(views.other, "clone[0].tolist() == src[0].tolist() and clone[1].byteOffset == 2 and clone[1].byteLength == 6"));
-    CHECK(EvalTruth(kinds.other, "[k.type for k in clone] == [k.type for k in src] and all(c.tolist() == s.tolist() for c, s in zip(clone, src))"));
+    CHECK(EvalTruth(views.other,
+                    "clone[1].setUint16(0, 0xBEEF)\nclone[2][2:4].tolist() == [0xBE, 0xEF] and src[3][2] == 2"));
+    CHECK(EvalTruth(views.other,
+                    "clone[0].tolist() == src[0].tolist() and clone[1].byteOffset == 2 and clone[1].byteLength == 6"));
+    CHECK(EvalTruth(kinds.other,
+                    "[k.type for k in clone] == [k.type for k in src] and all(c.tolist() == s.tolist() for c, s in "
+                    "zip(clone, src))"));
     CHECK(EvalTruth(readonly.other, "type(clone.buffer) is bytes and clone.tolist() == [0x0403]"));
 }
 
@@ -238,11 +259,10 @@ import unibind, collections
 class Thing:
     pass
 )PY");
-    for (const char* source :
-         {"lambda: 1", "len", "Thing", "Thing()", "unibind.Symbol('s')", "{1, 2}", "frozenset()", "memoryview(b'x')",
-          "collections.OrderedDict()", "[1, [2, [3, lambda: 4]]]", "{'k': {'deeper': print}}",
-          "{unibind.Symbol('key'): 1}", "type('S', (str,), {})('sub')", "True.__class__", "range(3)",
-          "iter([])", "1j", "Ellipsis"}) {
+    for (const char* source : {"lambda: 1", "len", "Thing", "Thing()", "unibind.Symbol('s')", "{1, 2}", "frozenset()",
+                               "memoryview(b'x')", "collections.OrderedDict()", "[1, [2, [3, lambda: 4]]]",
+                               "{'k': {'deeper': print}}", "{unibind.Symbol('key'): 1}", "type('S', (str,), {})('sub')",
+                               "True.__class__", "range(3)", "iter([])", "1j", "Ellipsis"}) {
         const std::string where = source;
         CAPTURE(where);
         const std::string message = Refusal(f.context, source);
@@ -471,26 +491,26 @@ TEST_CASE("clone: a well-framed payload that is not a clone is refused before an
     for (const char* source : {
              "marshal.dumps(None, 2)",
              "marshal.dumps((0,), 2)",
-             "marshal.dumps((0, []), 2)",                              // root out of range
+             "marshal.dumps((0, []), 2)",  // root out of range
              "marshal.dumps((1, [(0,)]), 2)",
              "marshal.dumps((-1, [(0,)]), 2)",
-             "marshal.dumps((0, [(99,)]), 2)",                         // unknown tag
-             "marshal.dumps((0, [(0, 1)]), 2)",                        // wrong arity
-             "marshal.dumps((0, [(2, 1)]), 2)",                        // a bool that is an int
-             "marshal.dumps((0, [(10, [5])]), 2)",                     // child out of range
-             "marshal.dumps((0, [(10, (0,))]), 2)",                    // children not a list
-             "marshal.dumps((0, [(11, [0])]), 2)",                     // a tuple holding itself
-             "marshal.dumps((0, [(11, [1]), (11, [0])]), 2)",          // two tuples holding each other
-             "marshal.dumps((0, [(12, [0])]), 2)",                     // odd pair list
-             "marshal.dumps((0, [(12, [1, 1]), (10, [])]), 2)",        // unhashable key: TypeError, cleanly
-             "marshal.dumps((0, [(8, 5, 1, 0, 1), (7, b'ab')]), 2)",   // view past its buffer
-             "marshal.dumps((0, [(8, 3, 1, 1, 0), (7, b'abcd')]), 2)", // misaligned view
-             "marshal.dumps((0, [(8, 12, 1, 0, 0), (7, b'')]), 2)",    // no such element type
-             "marshal.dumps((0, [(8, 1, 0, 0, 0)]), 2)",               // a view over a view
-             "marshal.dumps((0, [(9, 1, 0, 3), (5, 'abc')]), 2)",      // a view over a string
-             "marshal.dumps((0, [(13, [1, 1]), (10, [])]), 2)",        // an object key that is a list
-             "marshal.dumps((0, [(5, b'bytes')]), 2)",                 // a str that is bytes
-             "marshal.dumps((0, [(3, 1.5)]), 2)",                      // an int that is a float
+             "marshal.dumps((0, [(99,)]), 2)",                          // unknown tag
+             "marshal.dumps((0, [(0, 1)]), 2)",                         // wrong arity
+             "marshal.dumps((0, [(2, 1)]), 2)",                         // a bool that is an int
+             "marshal.dumps((0, [(10, [5])]), 2)",                      // child out of range
+             "marshal.dumps((0, [(10, (0,))]), 2)",                     // children not a list
+             "marshal.dumps((0, [(11, [0])]), 2)",                      // a tuple holding itself
+             "marshal.dumps((0, [(11, [1]), (11, [0])]), 2)",           // two tuples holding each other
+             "marshal.dumps((0, [(12, [0])]), 2)",                      // odd pair list
+             "marshal.dumps((0, [(12, [1, 1]), (10, [])]), 2)",         // unhashable key: TypeError, cleanly
+             "marshal.dumps((0, [(8, 5, 1, 0, 1), (7, b'ab')]), 2)",    // view past its buffer
+             "marshal.dumps((0, [(8, 3, 1, 1, 0), (7, b'abcd')]), 2)",  // misaligned view
+             "marshal.dumps((0, [(8, 12, 1, 0, 0), (7, b'')]), 2)",     // no such element type
+             "marshal.dumps((0, [(8, 1, 0, 0, 0)]), 2)",                // a view over a view
+             "marshal.dumps((0, [(9, 1, 0, 3), (5, 'abc')]), 2)",       // a view over a string
+             "marshal.dumps((0, [(13, [1, 1]), (10, [])]), 2)",         // an object key that is a list
+             "marshal.dumps((0, [(5, b'bytes')]), 2)",                  // a str that is bytes
+             "marshal.dumps((0, [(3, 1.5)]), 2)",                       // an int that is a float
              "marshal.dumps((0, [(4, compile('probe.append(1)', 'x', 'exec'))]))",  // code, never run
              "marshal.dumps(compile('probe.append(1)', 'x', 'exec'))",
          }) {

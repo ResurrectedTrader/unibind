@@ -21,9 +21,8 @@
 /// The main thread then calls `CancelTerminateExecution` back at the prompt:
 /// a stopped isolate stays stopped until it is told otherwise.
 
-#include <windows.h>
-
 #include <crtdbg.h>
+#include <windows.h>
 // for `_set_abort_behavior`, a CRT extension that the C header declares and <cstdlib> does not promise.
 // NOLINTNEXTLINE(modernize-deprecated-headers)
 #include <stdlib.h>

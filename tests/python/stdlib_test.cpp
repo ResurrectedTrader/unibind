@@ -5,12 +5,12 @@
 // cmake/vcpkg-ports/README.md for the list and for the few that refuse to load
 // in such an interpreter.
 
-#include "support.h"
-
 #include <latch>
 #include <string>
 #include <thread>
 #include <vector>
+
+#include "support.h"
 
 using py_test::Eval;
 using py_test::EvalError;
@@ -253,7 +253,8 @@ q.get() + q.get() + q.get()
 )") == 3);
 
     // uuid1 is _uuid's UuidCreateSequential (rpcrt4).
-    CHECK(EvalText(f.context, "import uuid\n(uuid.uuid4().version, uuid.uuid1().version, uuid._UuidCreate is not None)") ==
+    CHECK(EvalText(f.context,
+                   "import uuid\n(uuid.uuid4().version, uuid.uuid1().version, uuid._UuidCreate is not None)") ==
           "(4, 1, True)");
 
     // No tz database on Windows without the tzdata package, so a zone built

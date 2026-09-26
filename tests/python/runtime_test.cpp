@@ -4,6 +4,7 @@
 
 #include <windows.h>
 
+// After <windows.h>, which it needs; a block of its own so sorting keeps it there.
 #include <psapi.h>
 
 #include <algorithm>
@@ -285,7 +286,8 @@ TEST_CASE("termination: a stop is not a throw, and a throw is not a stop") {
     // Catching `unibind.Terminated` by hand is not a stop either: only the
     // flag is.
     handler.Reset();
-    CHECK(EvalInt(f.context, "import unibind\ntry:\n    raise unibind.Terminated()\nexcept BaseException:\n    x = 5\nx") == 5);
+    CHECK(EvalInt(f.context,
+                  "import unibind\ntry:\n    raise unibind.Terminated()\nexcept BaseException:\n    x = 5\nx") == 5);
 }
 
 TEST_CASE("termination: stopping the same isolate many times") {
@@ -1377,10 +1379,9 @@ TEST_CASE("lifetime: many isolates in sequence and on many threads leak nothing 
     CAPTURE(plain.allocations);
     CAPTURE(busy.allocations);
     CAPTURE(threaded.allocations);
-    MESSAGE("process memory kept per isolate: plain " << plain.processBytes / 1024
-                                                      << " KB, with queued work and a stop "
-                                                      << busy.processBytes / 1024 << " KB, on " << THREADS << " threads "
-                                                      << threaded.processBytes / 1024 << " KB");
+    MESSAGE("process memory kept per isolate: plain "
+            << plain.processBytes / 1024 << " KB, with queued work and a stop " << busy.processBytes / 1024
+            << " KB, on " << THREADS << " threads " << threaded.processBytes / 1024 << " KB");
     // What this area allocates for itself - its state, the queues, the timers,
     // the interrupts - is counted exactly, and whatever an isolate left for
     // teardown is given back with it. The heap account an isolate charged is

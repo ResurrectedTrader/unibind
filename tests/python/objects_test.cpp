@@ -352,8 +352,8 @@ TEST_CASE("objects: an inherited accessor sees the receiver as This and its owne
     auto parent = NewObject(f);
     auto child = NewObject(f);
     Cell cell{.value = 1};
-    REQUIRE(parent.SetAccessor(f.context, "through", &ReadCell, &WriteCell, ub::CallbackData::For(cell))
-                .value_or(false));
+    REQUIRE(
+        parent.SetAccessor(f.context, "through", &ReadCell, &WriteCell, ub::CallbackData::For(cell)).value_or(false));
     REQUIRE(child.SetPrototype(f.context, parent).value_or(false));
     Expose(f.context, "child", child);
 
@@ -365,8 +365,7 @@ TEST_CASE("objects: an inherited accessor sees the receiver as This and its owne
     CHECK_FALSE(cell.receiverWasHolder);
     CHECK_FALSE(child.HasOwn(f.context, Str(f.iso(), "through")).value_or(true));
     // Define ignores the setter and makes one.
-    REQUIRE(child.DefineOwnProperty(f.context, Str(f.iso(), "through"), ub::Integer::New(f.iso(), 6))
-                .value_or(false));
+    REQUIRE(child.DefineOwnProperty(f.context, Str(f.iso(), "through"), ub::Integer::New(f.iso(), 6)).value_or(false));
     CHECK(child.HasOwn(f.context, Str(f.iso(), "through")).value_or(false));
     CHECK(cell.value == 5);
 }
@@ -476,7 +475,7 @@ class Point(unibind.Object):
         return Point(self.x + dx, self.y)
 p = Point(3, -4)
 )")
-              .has_value());
+                .has_value());
     CHECK(EvalInt(f.context, "p.norm1") == 7);
     CHECK(EvalInt(f.context, "p.moved(1).x") == 4);
     CHECK(EvalText(f.context, "repr(p)") == "Point {x: 3, y: -4}");

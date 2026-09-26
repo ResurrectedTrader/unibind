@@ -214,9 +214,10 @@ std::int64_t UseEverything(int seed) {
         sum += script->Run(*context)->To<ub::Integer>()->Int32Value();
         // Left for teardown: live natives, a memoryview over a typed array
         // and one over a bytearray, a pending task and a timer.
-        Run(*context, "import builtins\nbuiltins.left = [Counted(), memoryview(bytearray(8)), m, Counted()]\n"
-                      "pending = asyncio.ensure_future(asyncio.sleep(3600))\n"
-                      "asyncio.get_event_loop().call_later(3600, print, 'never')");
+        Run(*context,
+            "import builtins\nbuiltins.left = [Counted(), memoryview(bytearray(8)), m, Counted()]\n"
+            "pending = asyncio.ensure_future(asyncio.sleep(3600))\n"
+            "asyncio.get_event_loop().call_later(3600, print, 'never')");
         root.Reset();
     }
     return sum;
@@ -414,7 +415,8 @@ while len(started) < 3:
     CHECK(EvalInt(after.context, "1 + 1") == 2);
 }
 
-TEST_CASE("teardown: a thread in a short blocking call is waited for, and one that sleeps past the grace is left behind") {
+TEST_CASE(
+    "teardown: a thread in a short blocking call is waited for, and one that sleeps past the grace is left behind") {
     {
         // Sleeping less than the grace: the isolate waits for it to wake,
         // meet the stop, and end.
@@ -459,7 +461,8 @@ threading.Thread(target=sleeper).start()
     CHECK(printed.empty());
 }
 
-TEST_CASE("teardown: TerminateExecution stops a script's threads too, and an interrupt waits for the isolate's thread") {
+TEST_CASE(
+    "teardown: TerminateExecution stops a script's threads too, and an interrupt waits for the isolate's thread") {
     Fixture f;
     static std::atomic<std::thread::id> interruptThread;
     interruptThread = std::thread::id();
@@ -500,8 +503,8 @@ t.start()
     // Stopped straight away, so its `finally` never ran.
     CHECK_FALSE(EvalTruth(f.context, "state['ended']"));
     // New threads run normally after the cancel.
-    CHECK(EvalInt(f.context, "out = []\nt2 = threading.Thread(target=lambda: out.append(5))\nt2.start()\nt2.join()\nout[0]") ==
-          5);
+    CHECK(EvalInt(f.context,
+                  "out = []\nt2 = threading.Thread(target=lambda: out.append(5))\nt2.start()\nt2.join()\nout[0]") == 5);
 }
 
 // ===========================================================================
@@ -598,7 +601,8 @@ task = asyncio.ensure_future(worker())
         f.iso().CancelTerminateExecution();
         CHECK(EvalTruth(f.context, "progress == ['started']"));
         f.iso().PumpJobs();
-        Run(f.context, "async def fine():\n    await asyncio.sleep(0)\n    return 9\nt2 = asyncio.ensure_future(fine())");
+        Run(f.context,
+            "async def fine():\n    await asyncio.sleep(0)\n    return 9\nt2 = asyncio.ensure_future(fine())");
         f.iso().PumpJobs();
         CHECK(EvalInt(f.context, "t2.result()") == 9);
     }
@@ -624,7 +628,8 @@ inner = asyncio.run(main())
     // A later script finds the isolate's loop, not "no current event loop".
     CHECK(EvalTruth(f.context, "asyncio.get_event_loop() is own"));
     CHECK(EvalTruth(f.context, "fut = asyncio.Future()\nfut.get_loop() is own"));
-    CHECK(EvalTruth(f.context, "async def seven():\n    return 7\nt = asyncio.ensure_future(seven())\nt.get_loop() is own"));
+    CHECK(EvalTruth(f.context,
+                    "async def seven():\n    return 7\nt = asyncio.ensure_future(seven())\nt.get_loop() is own"));
     f.iso().PumpJobs();
     CHECK(EvalInt(f.context, "t.result()") == 7);
 
@@ -642,13 +647,16 @@ inner = asyncio.run(main())
     // loop - a top-level-await script - it refuses, as it does in Python.
     CHECK(EvalInt(f.context, "asyncio.run(seven())") == 7);
     CHECK(EvalTruth(f.context, "asyncio.get_event_loop() is own"));
-    const auto nested = Eval(f.context, "c = seven()\ntry:\n    await asyncio.sleep(0)\n    asyncio.run(c)\n    outcome = 'ran'\nexcept RuntimeError:\n    c.close()\n    outcome = 'refused'");
+    const auto nested = Eval(f.context,
+                             "c = seven()\ntry:\n    await asyncio.sleep(0)\n    asyncio.run(c)\n    outcome = "
+                             "'ran'\nexcept RuntimeError:\n    c.close()\n    outcome = 'refused'");
     REQUIRE(nested.IsPromise());
     f.iso().PumpJobs();
     CHECK(EvalText(f.context, "outcome") == "refused");
     CHECK(EvalTruth(f.context, "asyncio.get_event_loop() is own"));
     // A script that sets a loop of its own keeps it.
-    CHECK(EvalTruth(f.context, "mine = asyncio.new_event_loop()\nasyncio.set_event_loop(mine)\n"
-                               "ok = asyncio.get_event_loop() is mine\nasyncio.set_event_loop(None)\nmine.close()\nok"));
+    CHECK(EvalTruth(f.context,
+                    "mine = asyncio.new_event_loop()\nasyncio.set_event_loop(mine)\n"
+                    "ok = asyncio.get_event_loop() is mine\nasyncio.set_event_loop(None)\nmine.close()\nok"));
     CHECK(EvalTruth(f.context, "asyncio.get_event_loop() is own"));
 }

@@ -1,10 +1,9 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-
 #include <crtdbg.h>
 #include <doctest/doctest.h>
+#include <windows.h>
 // for `_set_abort_behavior`, a CRT extension that the C header declares and <cstdlib> does not promise.
 // NOLINTNEXTLINE(modernize-deprecated-headers)
 #include <stdlib.h>

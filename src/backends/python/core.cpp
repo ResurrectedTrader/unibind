@@ -407,8 +407,7 @@ namespace detail {
 Frame::~Frame() {
     for (std::uint32_t i = count; i > 0; --i) {
         const std::uint32_t own = i - 1;
-        PyObject* value =
-            own < UNIBIND_FRAME_INLINE_SLOTS ? inlineSlots[own] : spill[own - UNIBIND_FRAME_INLINE_SLOTS];
+        PyObject* value = own < UNIBIND_FRAME_INLINE_SLOTS ? inlineSlots[own] : spill[own - UNIBIND_FRAME_INLINE_SLOTS];
         Py_DECREF(value);
     }
     ::operator delete(static_cast<void*>(spill), std::nothrow);
@@ -578,7 +577,7 @@ constexpr const char* ISOLATE_CAPSULE = "unibind.isolate";
     if (Isolate* here = CurrentIsolate(); here != nullptr && here->impl().interp == interp) {
         return here;
     }
-    PyObject* dict = PyInterpreterState_GetDict(interp);  // borrowed
+    PyObject* dict = PyInterpreterState_GetDict(interp);                                      // borrowed
     PyObject* capsule = dict == nullptr ? nullptr : PyDict_GetItemString(dict, ISOLATE_KEY);  // borrowed
     if (capsule == nullptr || !PyCapsule_IsValid(capsule, ISOLATE_CAPSULE)) {
         return nullptr;
@@ -730,7 +729,8 @@ Slot ContextGlobalObject(const Context& context) noexcept {
 
 void ContextEnter(const Context& context, ContextScopeState& storage) noexcept {
     Isolate& isolate = OwnerOf(context);
-    auto* state = ::new (static_cast<void*>(&storage)) ContextScopeState{&isolate, isolate.impl().entered, context.rec()};
+    auto* state =
+        ::new (static_cast<void*>(&storage)) ContextScopeState{&isolate, isolate.impl().entered, context.rec()};
     RetainContext(state->rec);
     isolate.impl().entered = state->rec;
 }
@@ -859,9 +859,8 @@ std::optional<Slot> RunScript(const Context& context, ScriptRec* script) {
     };
     if (isCoroutine(script->body) || isCoroutine(script->tail)) {
         PyObject* sequence = PyDict_GetItemString(TypesOf(isolate).support, "run_async_script");  // borrowed
-        PyObject* coroutine = PyObject_CallFunctionObjArgs(sequence, script->body,
-                                                           script->tail != nullptr ? script->tail : Py_None, globals,
-                                                           nullptr);
+        PyObject* coroutine = PyObject_CallFunctionObjArgs(
+            sequence, script->body, script->tail != nullptr ? script->tail : Py_None, globals, nullptr);
         if (coroutine == nullptr) {
             return std::nullopt;
         }
@@ -917,8 +916,7 @@ namespace {
     int column = 0;
     int endLine = 0;
     int endColumn = 0;
-    if (PyCode_Addr2Location(code, PyFrame_GetLasti(frame), &line, &column, &endLine, &endColumn) != 0 &&
-        column >= 0) {
+    if (PyCode_Addr2Location(code, PyFrame_GetLasti(frame), &line, &column, &endLine, &endColumn) != 0 && column >= 0) {
         out.columnNumber = column + 1;
     }
     Py_DECREF(code);

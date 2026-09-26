@@ -240,7 +240,8 @@ TEST_CASE("interceptors: a named handler answers for properties that are not the
     Store store;
     store.named["fromTheStore"] = 11;
     const auto shape = ub::ObjectTemplate::New(f.iso());
-    shape.SetHandler(ub::NamedPropertyHandler{.getter = &GetNamed, .setter = &SetNamed, .data = ub::CallbackData::For(store)});
+    shape.SetHandler(
+        ub::NamedPropertyHandler{.getter = &GetNamed, .setter = &SetNamed, .data = ub::CallbackData::For(store)});
     const auto instance = Instance(f, shape);
     Expose(f.context, "sandbox", instance);
 
@@ -265,7 +266,8 @@ TEST_CASE("interceptors: declining lets the ordinary lookup carry on") {
     Store store;
     const auto shape = ub::ObjectTemplate::New(f.iso());
     shape.Set("declared", ub::Constant(std::int32_t{5}));
-    shape.SetHandler(ub::NamedPropertyHandler{.getter = &GetNamed, .setter = &SetNamed, .data = ub::CallbackData::For(store)});
+    shape.SetHandler(
+        ub::NamedPropertyHandler{.getter = &GetNamed, .setter = &SetNamed, .data = ub::CallbackData::For(store)});
     const auto instance = Instance(f, shape);
     Expose(f.context, "sandbox", instance);
 
@@ -386,9 +388,8 @@ TEST_CASE("interceptors: what a setter writes to its return slot changes nothing
     Fixture f;
     Store store;
     const auto shape = ub::ObjectTemplate::New(f.iso());
-    shape.SetHandler(ub::NamedPropertyHandler{.getter = &GetNamed,
-                                              .setter = &SetNamedAndScribble,
-                                              .data = ub::CallbackData::For(store)});
+    shape.SetHandler(ub::NamedPropertyHandler{
+        .getter = &GetNamed, .setter = &SetNamedAndScribble, .data = ub::CallbackData::For(store)});
     Expose(f.context, "sandbox", Instance(f, shape));
     CHECK(EvalInt(f.context, "sandbox.written = 7\nsandbox.written") == 7);
     CHECK(store.named["written"] == 7);
@@ -417,21 +418,22 @@ TEST_CASE("interceptors: a hook is told the object it lives on and the one it wa
 
     CHECK(EvalTruth(f.context, "sandbox.holder is sandbox and sandbox.receiver is sandbox"));
     // Through something that inherits from it: CPython gives the lookup both.
-    CHECK(EvalTruth(f.context, "child = unibind.Object()\nchild.__proto__ = sandbox\n"
-                               "child.holder is sandbox and child.receiver is child"));
+    CHECK(EvalTruth(f.context,
+                    "child = unibind.Object()\nchild.__proto__ = sandbox\n"
+                    "child.holder is sandbox and child.receiver is child"));
 }
 
 TEST_CASE("interceptors: a hook that throws has intercepted the access whatever it returned") {
     Fixture f;
     const auto shape = ub::ObjectTemplate::New(f.iso());
     shape.Set("boom", ub::Constant(11));
-    shape.SetHandler(ub::NamedPropertyHandler{.getter = &ThrowsAndDeclines,
-                                              .setter = &SetterThrowsAndDeclines,
-                                              .deleter = &DeleterThrowsAndDeclines});
+    shape.SetHandler(ub::NamedPropertyHandler{
+        .getter = &ThrowsAndDeclines, .setter = &SetterThrowsAndDeclines, .deleter = &DeleterThrowsAndDeclines});
     const auto instance = Instance(f, shape);
     Expose(f.context, "probe", instance);
 
-    CHECK(EvalText(f.context, "try:\n    probe.boom\n    r = 'answered'\nexcept TypeError as e:\n    r = 'threw: ' + str(e)\nr") ==
+    CHECK(EvalText(f.context,
+                   "try:\n    probe.boom\n    r = 'answered'\nexcept TypeError as e:\n    r = 'threw: ' + str(e)\nr") ==
           "threw: the hook threw");
     CHECK_FALSE(f.iso().HasPendingException());
     CHECK(EvalError(f.context, "probe.boom = 1") == "TypeError: the setter threw");

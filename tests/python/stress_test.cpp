@@ -3,6 +3,7 @@
 
 #include <windows.h>
 
+// After <windows.h>, which it needs; a block of its own so sorting keeps it there.
 #include <psapi.h>
 
 #include <cstdio>
@@ -44,4 +45,3 @@ TEST_CASE("stress: process memory over many isolates made and destroyed" * docte
         }
     }
 }
-

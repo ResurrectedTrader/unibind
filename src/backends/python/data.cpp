@@ -77,9 +77,8 @@ struct ElementInfo {
 };
 
 constexpr ElementInfo ELEMENTS[] = {
-    {"int8", "b"},      {"uint8", "B"},   {"uint8clamped", "B"}, {"int16", "h"},
-    {"uint16", "H"},    {"int32", "i"},   {"uint32", "I"},       {"float32", "f"},
-    {"float64", "d"},   {"bigint64", "q"}, {"biguint64", "Q"},   {"float16", "e"},
+    {"int8", "b"},   {"uint8", "B"},   {"uint8clamped", "B"}, {"int16", "h"},    {"uint16", "H"},    {"int32", "i"},
+    {"uint32", "I"}, {"float32", "f"}, {"float64", "d"},      {"bigint64", "q"}, {"biguint64", "Q"}, {"float16", "e"},
 };
 constexpr int ELEMENT_TYPE_COUNT = static_cast<int>(sizeof(ELEMENTS) / sizeof(ELEMENTS[0]));
 static_assert(ELEMENT_TYPE_COUNT == static_cast<int>(ElementType::Float16) + 1,
@@ -487,19 +486,17 @@ struct Window {
 // ===========================================================================
 
 struct TypedArrayObject {
-    PyObject_HEAD
-    PyObject* buffer;      ///< bytearray or bytes; strong. Null only after tp_clear.
+    PyObject_HEAD PyObject* buffer;  ///< bytearray or bytes; strong. Null only after tp_clear.
     Py_ssize_t byteOffset;
-    Py_ssize_t length;     ///< in elements, as made - the live length may be zero
+    Py_ssize_t length;  ///< in elements, as made - the live length may be zero
     ElementType type;
-    Py_ssize_t shape;      ///< `length`, and `stride` the element size: what an
-    Py_ssize_t stride;     ///< exported Py_buffer points its shape and strides at
+    Py_ssize_t shape;   ///< `length`, and `stride` the element size: what an
+    Py_ssize_t stride;  ///< exported Py_buffer points its shape and strides at
     PyObject* weaklist;
 };
 
 struct DataViewObject {
-    PyObject_HEAD
-    PyObject* buffer;  ///< bytearray or bytes; strong. Null only after tp_clear.
+    PyObject_HEAD PyObject* buffer;  ///< bytearray or bytes; strong. Null only after tp_clear.
     Py_ssize_t byteOffset;
     Py_ssize_t byteLength;
     PyObject* weaklist;
@@ -965,8 +962,8 @@ PyObject* TypedArraySubarray(PyObject* object, PyObject* args, PyObject* kwds) {
         return nullptr;
     }
     const Py_ssize_t count = std::max<Py_ssize_t>(end - begin, 0);
-    return NewTypedArrayObject(Py_TYPE(object), self->type, self->buffer,
-                               self->byteOffset + begin * SizeOf(self->type), count);
+    return NewTypedArrayObject(Py_TYPE(object), self->type, self->buffer, self->byteOffset + begin * SizeOf(self->type),
+                               count);
 }
 
 PyObject* TypedArrayRepr(PyObject* object) {
@@ -1058,8 +1055,7 @@ PyGetSetDef typedArrayGetSet[] = {
     {"byteOffset", &TypedArrayGetByteOffset, nullptr, "Where the view starts in its buffer; 0 if out of bounds.",
      nullptr},
     {"byteLength", &TypedArrayGetByteLength, nullptr, "Bytes the view covers; 0 if out of bounds.", nullptr},
-    {"length", &TypedArrayGetLength, nullptr, "Elements the view covers; 0 if out of bounds. Same as len().",
-     nullptr},
+    {"length", &TypedArrayGetLength, nullptr, "Elements the view covers; 0 if out of bounds. Same as len().", nullptr},
     {"type", &TypedArrayGetType, nullptr, "The element type's name: 'int32', 'float64', ...", nullptr},
     {"BYTES_PER_ELEMENT", &TypedArrayGetBytesPerElement, nullptr, "The element size in bytes.", nullptr},
     {nullptr, nullptr, nullptr, nullptr, nullptr},
@@ -1129,8 +1125,8 @@ PyObject* DataViewNew(PyTypeObject* type, PyObject* args, PyObject* kwds) {
     PyObject* buffer = nullptr;
     PyObject* offsetArgument = Py_None;
     PyObject* lengthArgument = Py_None;
-    if (PyArg_ParseTupleAndKeywords(args, kwds, "O|OO:DataView", const_cast<char**>(keywords), &buffer,
-                                    &offsetArgument, &lengthArgument) == 0) {
+    if (PyArg_ParseTupleAndKeywords(args, kwds, "O|OO:DataView", const_cast<char**>(keywords), &buffer, &offsetArgument,
+                                    &lengthArgument) == 0) {
         return nullptr;
     }
     if (!IsBuffer(buffer)) {
@@ -1216,8 +1212,8 @@ PyObject* DataViewGet(PyObject* object, PyObject* args, PyObject* kwds) {
     static const char* keywords[] = {"byteOffset", "littleEndian", nullptr};
     PyObject* offsetArgument = nullptr;
     int littleEndian = 0;
-    if (PyArg_ParseTupleAndKeywords(args, kwds, "O|p", const_cast<char**>(keywords), &offsetArgument,
-                                    &littleEndian) == 0) {
+    if (PyArg_ParseTupleAndKeywords(args, kwds, "O|p", const_cast<char**>(keywords), &offsetArgument, &littleEndian) ==
+        0) {
         return nullptr;
     }
     Py_ssize_t offset = 0;
@@ -1283,8 +1279,7 @@ PyObject* DataViewRepr(PyObject* object) {
     if (!WindowOf(self).ok) {
         return PyUnicode_FromString("unibind.DataView(<out of bounds>)");
     }
-    return PyUnicode_FromFormat("unibind.DataView(byteOffset=%zd, byteLength=%zd)", self->byteOffset,
-                                self->byteLength);
+    return PyUnicode_FromFormat("unibind.DataView(byteOffset=%zd, byteLength=%zd)", self->byteOffset, self->byteLength);
 }
 
 // A keyword-taking method is stored as a PyCFunction; the cast goes through
@@ -1359,10 +1354,7 @@ PyType_Slot dataViewSlots[] = {
 };
 
 PyType_Spec dataViewSpec = {
-    "unibind.DataView",
-    sizeof(DataViewObject),
-    0,
-    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_IMMUTABLETYPE,
+    "unibind.DataView", sizeof(DataViewObject), 0, Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_IMMUTABLETYPE,
     dataViewSlots,
 };
 
@@ -1417,8 +1409,7 @@ struct ViewFields {
 
 // --- binary data: the contract ------------------------------------------------------
 
-std::optional<Slot> MakeArrayBuffer(const Context& context, std::span<const std::byte> bytes,
-                                    std::size_t byteLength) {
+std::optional<Slot> MakeArrayBuffer(const Context& context, std::span<const std::byte> bytes, std::size_t byteLength) {
     Isolate& isolate = OwnerOf(context);
     if (bytes.size() > byteLength || byteLength > static_cast<std::size_t>(PY_SSIZE_T_MAX)) {
         return std::nullopt;
@@ -1530,8 +1521,7 @@ std::size_t ArrayBufferViewCopyOut(Slot view, std::span<std::byte> out) noexcept
     return CopyWindow(FieldsOf(view), out);
 }
 
-std::optional<Slot> MakeDataView(const Context& context, Slot buffer, std::size_t byteOffset,
-                                 std::size_t byteLength) {
+std::optional<Slot> MakeDataView(const Context& context, Slot buffer, std::size_t byteOffset, std::size_t byteLength) {
     Isolate& isolate = OwnerOf(context);
     PyObject* target = Resolve(buffer);
     PyTypeObject* viewType = isolate.impl().types.dataView;
@@ -1602,8 +1592,8 @@ constexpr int CLONE_MARSHAL_VERSION = 2;
 
 /// Frame `payload` (a `bytes`, borrowed) as a blob of this kind.
 [[nodiscard]] std::optional<std::vector<std::uint8_t>> FrameBlob(PyObject* payload, std::uint32_t magic,
-                                                               std::uint16_t format, int marshalVersion,
-                                                               std::uint32_t bytecodeMagic) {
+                                                                 std::uint16_t format, int marshalVersion,
+                                                                 std::uint32_t bytecodeMagic) {
     const auto* bytes = reinterpret_cast<const std::uint8_t*>(PyBytes_AS_STRING(payload));
     const auto size = static_cast<std::size_t>(PyBytes_GET_SIZE(payload));
     const std::span<const std::uint8_t> body(bytes, size);
@@ -1697,8 +1687,7 @@ void RaiseCloneError(Isolate& isolate, const char* message) noexcept {
 /// instance, which derive from it and may carry a native that cannot be cloned.
 [[nodiscard]] bool IsPlainObject(Isolate& isolate, PyObject* object) noexcept {
     PyTypeObject* type = isolate.impl().types.object;
-    return type != nullptr && Py_TYPE(object) == type &&
-           reinterpret_cast<ObjectInstance*>(object)->box == nullptr;
+    return type != nullptr && Py_TYPE(object) == type && reinterpret_cast<ObjectInstance*>(object)->box == nullptr;
 }
 
 /// Writes a value graph down as nodes. Iterative - a work list, not recursion -
@@ -1798,10 +1787,10 @@ class Encoder {
             // A function, a symbol, an External, a promise, a class instance -
             // or a subclass of a clonable type, whose class could not be
             // rebuilt from the data alone. The whole clone fails (value.h).
-            const char* what = PyCallable_Check(value) != 0            ? "a function"
-                               : IsSymbol(isolate_, value)            ? "a Symbol"
+            const char* what = PyCallable_Check(value) != 0                ? "a function"
+                               : IsSymbol(isolate_, value)                 ? "a Symbol"
                                : PyObject_TypeCheck(value, types.external) ? "an External"
-                                                                        : nullptr;
+                                                                           : nullptr;
             if (what != nullptr) {
                 PyErr_Format(CloneErrorClass(isolate_), "%s could not be cloned", what);
             } else {
@@ -1965,8 +1954,7 @@ class Encoder {
                 continue;
             }
             const Slot keySlot = PushBorrowed(isolate_, key);
-            const std::optional<Slot> value =
-                keySlot.IsEmpty() ? std::nullopt : GetProperty(context_, self, keySlot);
+            const std::optional<Slot> value = keySlot.IsEmpty() ? std::nullopt : GetProperty(context_, self, keySlot);
             if (!value) {
                 if (PyErr_Occurred() == nullptr) {
                     RaiseCloneError(isolate_, "a property of the object could not be read");
@@ -2008,11 +1996,11 @@ class Encoder {
 
     const Context& context_;
     Isolate& isolate_;
-    std::vector<PyObject*> nodes_;                          ///< owned; null until expanded
-    std::vector<PyObject*> held_;                           ///< owned: keeps every memo key alive
-    std::unordered_map<PyObject*, Py_ssize_t> memo_;        ///< identity -> node index
+    std::vector<PyObject*> nodes_;                           ///< owned; null until expanded
+    std::vector<PyObject*> held_;                            ///< owned: keeps every memo key alive
+    std::unordered_map<PyObject*, Py_ssize_t> memo_;         ///< identity -> node index
     std::vector<std::pair<PyObject*, Py_ssize_t>> pending_;  ///< containers still to expand
-    std::unordered_map<Py_ssize_t, Py_ssize_t> sizes_;      ///< buffer node -> bytes written
+    std::unordered_map<Py_ssize_t, Py_ssize_t> sizes_;       ///< buffer node -> bytes written
     std::vector<ViewRecord> views_;
 };
 
@@ -2147,7 +2135,8 @@ class Decoder {
         // read any node's tag and fields without a second look.
         for (Py_ssize_t i = 0; i < count_; ++i) {
             PyObject* node = Node(i);
-            if (!PyTuple_CheckExact(node) || PyTuple_GET_SIZE(node) < 1 || !PyLong_CheckExact(PyTuple_GET_ITEM(node, 0))) {
+            if (!PyTuple_CheckExact(node) || PyTuple_GET_SIZE(node) < 1 ||
+                !PyLong_CheckExact(PyTuple_GET_ITEM(node, 0))) {
                 return false;
             }
             int overflow = 0;
@@ -2486,7 +2475,8 @@ std::optional<Slot> DeserializeValue(const Context& context, std::span<const std
     if (!gate.Open()) {
         return std::nullopt;
     }
-    const std::span<const std::uint8_t> payload = UnframeBlob(blob, CLONE_MAGIC, CLONE_FORMAT, CLONE_MARSHAL_VERSION, 0);
+    const std::span<const std::uint8_t> payload =
+        UnframeBlob(blob, CLONE_MAGIC, CLONE_FORMAT, CLONE_MARSHAL_VERSION, 0);
     if (payload.empty()) {
         RaiseCloneError(isolate, "the blob is not a value this engine build serialized, or it is damaged");
         return std::nullopt;
@@ -2535,8 +2525,8 @@ void RegisterSourceLines(PyObject* filename, std::string_view source, int lineOf
     }
     PyObject* linecache = lines != nullptr ? PyImport_ImportModule("linecache") : nullptr;
     PyObject* cache = linecache != nullptr ? PyObject_GetAttrString(linecache, "cache") : nullptr;
-    PyObject* entry = cache != nullptr ? Py_BuildValue("(nOOO)", PyUnicode_GET_LENGTH(text), Py_None, lines, filename)
-                                       : nullptr;
+    PyObject* entry =
+        cache != nullptr ? Py_BuildValue("(nOOO)", PyUnicode_GET_LENGTH(text), Py_None, lines, filename) : nullptr;
     if (entry == nullptr || PyObject_SetItem(cache, filename, entry) != 0) {
         PyErr_Clear();
     }
@@ -2552,7 +2542,8 @@ void RegisterSourceLines(PyObject* filename, std::string_view source, int lineOf
 /// name. False - with nothing pending - for anything else.
 [[nodiscard]] bool LoadCodePair(std::span<const std::uint8_t> blob, PyObject* filename, PyObject** body,
                                 PyObject** tail) noexcept {
-    const std::span<const std::uint8_t> payload = UnframeBlob(blob, CODE_MAGIC, CODE_FORMAT, Py_MARSHAL_VERSION, BytecodeMagic());
+    const std::span<const std::uint8_t> payload =
+        UnframeBlob(blob, CODE_MAGIC, CODE_FORMAT, Py_MARSHAL_VERSION, BytecodeMagic());
     if (payload.empty()) {
         return false;
     }
@@ -2643,7 +2634,8 @@ std::optional<std::vector<std::uint8_t>> ScriptCreateCodeCache(const ScriptRec* 
         PyErr_Clear();
         return std::nullopt;
     }
-    std::optional<std::vector<std::uint8_t>> blob = FrameBlob(payload, CODE_MAGIC, CODE_FORMAT, Py_MARSHAL_VERSION, BytecodeMagic());
+    std::optional<std::vector<std::uint8_t>> blob =
+        FrameBlob(payload, CODE_MAGIC, CODE_FORMAT, Py_MARSHAL_VERSION, BytecodeMagic());
     Py_DECREF(payload);
     return blob;
 }

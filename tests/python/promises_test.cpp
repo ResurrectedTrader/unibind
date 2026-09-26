@@ -337,8 +337,9 @@ failed.set_exception(ValueError('never retrieved'))
                 // Nothing that REQUIREs on a thread of our own: a REQUIRE
                 // throws, and a throw out of a thread is std::terminate.
                 Fixture f;
-                const auto result = Eval(
-                    f.context, "import asyncio\ntotal = 0\nfor i in range(50):\n    await asyncio.sleep(0)\n    total += i\ntotal");
+                const auto result = Eval(f.context,
+                                         "import asyncio\ntotal = 0\nfor i in range(50):\n    await asyncio.sleep(0)\n "
+                                         "   total += i\ntotal");
                 const auto task = result.To<ub::Promise>();
                 if (!task) {
                     return;

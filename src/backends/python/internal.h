@@ -98,13 +98,13 @@ struct Types {
     PyObject* nullValue = nullptr;   ///< `unibind.null`, the one Null value
     PyTypeObject* symbol = nullptr;  ///< `unibind.Symbol`
     PyTypeObject* external = nullptr;
-    PyObject* error = nullptr;       ///< `unibind.Error(Exception)` - ErrorKind::Error
-    PyObject* rangeError = nullptr;  ///< `unibind.RangeError(ValueError)` - ErrorKind::RangeError
-    PyObject* thrown = nullptr;      ///< `unibind.Thrown(Exception)`: a thrown value that is not an exception
-    PyObject* terminated = nullptr;  ///< `unibind.Terminated(BaseException)`: TerminateExecution unwinding
-    PyObject* wellKnown[5] = {};     ///< the well-known symbols, indexed by WellKnownSymbol
+    PyObject* error = nullptr;           ///< `unibind.Error(Exception)` - ErrorKind::Error
+    PyObject* rangeError = nullptr;      ///< `unibind.RangeError(ValueError)` - ErrorKind::RangeError
+    PyObject* thrown = nullptr;          ///< `unibind.Thrown(Exception)`: a thrown value that is not an exception
+    PyObject* terminated = nullptr;      ///< `unibind.Terminated(BaseException)`: TerminateExecution unwinding
+    PyObject* wellKnown[5] = {};         ///< the well-known symbols, indexed by WellKnownSymbol
     PyObject* symbolRegistry = nullptr;  ///< Symbol.for: dict str -> Symbol
-    PyObject* support = nullptr;     ///< module.cpp's pure-Python helpers (a dict)
+    PyObject* support = nullptr;         ///< module.cpp's pure-Python helpers (a dict)
 
     // objects.cpp
     PyTypeObject* object = nullptr;  ///< `unibind.Object`: a JavaScript-shaped property bag
@@ -468,8 +468,8 @@ void RaiseValue(Isolate& isolate, PyObject* value) noexcept;
 /// Compile `source` into the pair of code objects a `ScriptRec` holds - see
 /// `ScriptRec`. False with the SyntaxError pending if it does not compile.
 /// core.cpp.
-[[nodiscard]] bool CompileSource(Isolate& isolate, std::string_view source, const ScriptOrigin& origin,
-                                 PyObject** body, PyObject** tail) noexcept;
+[[nodiscard]] bool CompileSource(Isolate& isolate, std::string_view source, const ScriptOrigin& origin, PyObject** body,
+                                 PyObject** tail) noexcept;
 /// A record over two code objects, taking both references. Null (having
 /// released them) when there is not the memory. core.cpp.
 [[nodiscard]] ScriptRec* NewScriptRec(Isolate& isolate, PyObject* body, PyObject* tail, std::string_view name) noexcept;
@@ -516,9 +516,8 @@ void RaiseValue(Isolate& isolate, PyObject* value) noexcept;
 
 /// `unibind.Symbol` instances.
 struct SymbolObject {
-    PyObject_HEAD
-    PyObject* description;  ///< str or None
-    PyObject* dunder;       ///< the Python protocol name a well-known symbol stands for, or null
+    PyObject_HEAD PyObject* description;  ///< str or None
+    PyObject* dunder;                     ///< the Python protocol name a well-known symbol stands for, or null
 };
 
 [[nodiscard]] bool IsSymbol(Isolate& isolate, PyObject* value) noexcept;
@@ -532,8 +531,7 @@ struct SymbolObject {
 
 /// `unibind.External` instances.
 struct ExternalObject {
-    PyObject_HEAD
-    CallbackData data;
+    PyObject_HEAD CallbackData data;
 };
 
 // --- objects (objects.cpp) -------------------------------------------------------
@@ -542,13 +540,13 @@ struct ExternalObject {
 /// class makes, which derive from it. The fields here are the ones other
 /// translation units need; objects.cpp owns their meaning.
 struct ObjectInstance {
-    PyObject_HEAD
-    PyObject* properties;  ///< dict: normalized key -> value (or an accessor record); owned by objects.cpp
-    PyObject* meta;        ///< dict or null: normalized key -> attributes, where not the default
-    PyObject* prototype;   ///< the [[Prototype]]: a unibind.Object, or null
+    PyObject_HEAD PyObject*
+        properties;       ///< dict: normalized key -> value (or an accessor record); owned by objects.cpp
+    PyObject* meta;       ///< dict or null: normalized key -> attributes, where not the default
+    PyObject* prototype;  ///< the [[Prototype]]: a unibind.Object, or null
     PyObject* weaklist;
-    TemplateRec* tpl;      ///< the template that made this instance, or null
-    NativeBox* box;        ///< the native a Class<T> instance carries, or null
+    TemplateRec* tpl;  ///< the template that made this instance, or null
+    NativeBox* box;    ///< the native a Class<T> instance carries, or null
 };
 
 // --- area hooks ----------------------------------------------------------------

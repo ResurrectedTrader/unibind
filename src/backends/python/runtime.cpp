@@ -21,9 +21,8 @@
 //     byte count follow the block to whichever thread frees it, which is how a
 //     heap limit and heap statistics are possible at all.
 
-#include <windows.h>
-
 #include <intrin.h>
+#include <windows.h>
 
 #include <algorithm>
 #include <climits>
@@ -391,13 +390,13 @@ struct RuntimeState {
     // The event loop, and the parts of it the pump drives directly. All null
     // when asyncio could not be imported, and then there are no promises.
     // Strong references, dropped at teardown.
-    PyObject* support = nullptr;         ///< the Python half, below: a dict
-    PyObject* loop = nullptr;            ///< an `asyncio.SelectorEventLoop`
-    PyObject* ready = nullptr;           ///< `loop._ready`: the microtask queue
-    PyObject* scheduledTimers = nullptr; ///< `loop._scheduled`: its timers
-    PyObject* runOnce = nullptr;         ///< `loop._run_once`, bound
-    PyObject* setRunningLoop = nullptr;  ///< `asyncio.events._set_running_loop`
-    PyObject* futureType = nullptr;      ///< `asyncio.Future`
+    PyObject* support = nullptr;          ///< the Python half, below: a dict
+    PyObject* loop = nullptr;             ///< an `asyncio.SelectorEventLoop`
+    PyObject* ready = nullptr;            ///< `loop._ready`: the microtask queue
+    PyObject* scheduledTimers = nullptr;  ///< `loop._scheduled`: its timers
+    PyObject* runOnce = nullptr;          ///< `loop._run_once`, bound
+    PyObject* setRunningLoop = nullptr;   ///< `asyncio.events._set_running_loop`
+    PyObject* futureType = nullptr;       ///< `asyncio.Future`
 
     /// The `sys.monitoring` tool this isolate claimed, or -1, and whether its
     /// events are switched on - only while a stop is in force; see `ArmStop`.
@@ -561,7 +560,8 @@ PyObject* MonitoringCallback(PyObject* self, PyObject* const* /*args*/, Py_ssize
     Py_RETURN_NONE;
 }
 
-PyMethodDef monitoringCallbackDef = {"_stop", reinterpret_cast<PyCFunction>(reinterpret_cast<void (*)()>(&MonitoringCallback)),
+PyMethodDef monitoringCallbackDef = {"_stop",
+                                     reinterpret_cast<PyCFunction>(reinterpret_cast<void (*)()>(&MonitoringCallback)),
                                      METH_FASTCALL, "unibind: raises Terminated while a stop is in force."};
 
 constexpr int MONITORING_TOOLS[] = {4, 3};
@@ -605,12 +605,12 @@ void ClaimMonitoring(RuntimeState& runtime) noexcept {
             continue;
         }
         PyObject* claimed = PyObject_CallMethod(monitoring, "use_tool_id", "is", tool, "unibind");
-        PyObject* onLine = claimed == nullptr ? nullptr
-                                              : PyObject_CallMethod(monitoring, "register_callback", "ilO", tool, line,
-                                                                    callback);
-        PyObject* onCall = onLine == nullptr ? nullptr
-                                             : PyObject_CallMethod(monitoring, "register_callback", "ilO", tool, call,
-                                                                   callback);
+        PyObject* onLine = claimed == nullptr
+                               ? nullptr
+                               : PyObject_CallMethod(monitoring, "register_callback", "ilO", tool, line, callback);
+        PyObject* onCall = onLine == nullptr
+                               ? nullptr
+                               : PyObject_CallMethod(monitoring, "register_callback", "ilO", tool, call, callback);
         const bool ok = onCall != nullptr;
         Py_XDECREF(claimed);
         Py_XDECREF(onLine);
@@ -1492,8 +1492,8 @@ std::optional<bool> SettleFromEmbedder(const Context& context, Slot promise, Slo
         answer = PyObject_CallFunctionObjArgs(Helper(*runtime, "reject"), future, error, nullptr);
         Py_DECREF(error);
     } else {
-        answer = PyObject_CallFunctionObjArgs(Helper(*runtime, "resolve"), runtime->loop, future, Resolve(value),
-                                              nullptr);
+        answer =
+            PyObject_CallFunctionObjArgs(Helper(*runtime, "resolve"), runtime->loop, future, Resolve(value), nullptr);
     }
     if (answer == nullptr) {
         return std::nullopt;

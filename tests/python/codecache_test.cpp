@@ -7,17 +7,18 @@
 #include "data_support.h"
 
 using py_test::Eval;
-using py_test::Run;
 using py_test::EvalInt;
 using py_test::EvalText;
 using py_test::EvalTruth;
 using py_test::Fixture;
+using py_test::Run;
 
 namespace {
 
 using Blob = std::vector<std::uint8_t>;
 
-constexpr std::string_view SOURCE = "def square(n):\n    return n * n\ntotal = sum(square(i) for i in range(10))\ntotal + 1";
+constexpr std::string_view SOURCE =
+    "def square(n):\n    return n * n\ntotal = sum(square(i) for i in range(10))\ntotal + 1";
 
 [[nodiscard]] Blob MakeCache(const ub::Context& context, std::string_view source, const ub::ScriptOrigin& origin) {
     auto script = ub::Script::Compile(context, source, origin, ub::CompileOptions::EagerCompile);
@@ -155,11 +156,12 @@ TEST_CASE("codecache: a payload re-framed for another source is caught by the ba
 
     const auto reframe = [&](std::string_view source, const ub::ScriptOrigin& origin,
                              std::span<const std::uint8_t> body) {
-        ub::detail::CodeCacheHeader header{.magic = ub::detail::CODE_CACHE_MAGIC,
-                                           .format = ub::detail::CODE_CACHE_FORMAT,
-                                           .key = ub::detail::CodeCacheKey(source, origin, ub::detail::BackendBuildId()),
-                                           .payloadLength = body.size(),
-                                           .payloadHash = ub::detail::CodeCachePayloadHash(body)};
+        ub::detail::CodeCacheHeader header{
+            .magic = ub::detail::CODE_CACHE_MAGIC,
+            .format = ub::detail::CODE_CACHE_FORMAT,
+            .key = ub::detail::CodeCacheKey(source, origin, ub::detail::BackendBuildId()),
+            .payloadLength = body.size(),
+            .payloadHash = ub::detail::CodeCachePayloadHash(body)};
         Blob out(HEADER);
         std::memcpy(out.data(), &header, HEADER);
         out.insert(out.end(), body.begin(), body.end());

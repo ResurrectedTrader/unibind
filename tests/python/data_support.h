@@ -6,8 +6,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
-#include <utility>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "support.h"

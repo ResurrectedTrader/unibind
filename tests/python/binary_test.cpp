@@ -11,13 +11,13 @@
 using py_test::AllBytes;
 using py_test::Bytes;
 using py_test::Eval;
-using py_test::Run;
 using py_test::EvalAs;
 using py_test::EvalInt;
 using py_test::EvalText;
 using py_test::EvalTruth;
 using py_test::Fixture;
 using py_test::Give;
+using py_test::Run;
 
 // --- ArrayBuffer ---------------------------------------------------------------
 
@@ -270,23 +270,30 @@ def same(a, b):
 nan, inf = float('nan'), float('inf')
 )PY");
     // Integers wrap modulo 2^N, from ints of any size and from truncated floats.
-    CHECK(EvalTruth(f.context, "[put('int8', v) for v in (127, 128, 255, 256, -129, 2**70 + 5)] == [127, -128, -1, 0, 127, 5]"));
+    CHECK(EvalTruth(f.context,
+                    "[put('int8', v) for v in (127, 128, 255, 256, -129, 2**70 + 5)] == [127, -128, -1, 0, 127, 5]"));
     CHECK(EvalTruth(f.context, "[put('int8', v) for v in (1.9, -1.9, nan, inf, -inf, -0.0)] == [1, -1, 0, 0, 0, 0]"));
     CHECK(EvalTruth(f.context, "[put('uint8', v) for v in (-1, 256, 257.99, 2**64 + 1)] == [255, 0, 1, 1]"));
-    CHECK(EvalTruth(f.context, "[put('int16', v) for v in (32767, 32768, 65535, -32769)] == [32767, -32768, -1, 32767]"));
+    CHECK(
+        EvalTruth(f.context, "[put('int16', v) for v in (32767, 32768, 65535, -32769)] == [32767, -32768, -1, 32767]"));
     CHECK(EvalTruth(f.context, "[put('uint16', v) for v in (-1, 65536, 70000)] == [65535, 0, 4464]"));
-    CHECK(EvalTruth(f.context, "[put('int32', v) for v in (2**31, 2**32 + 7, 4294967295.0, 1e20, -2**31 - 1)] == "
-                               "[-2**31, 7, -1, 1661992960, 2**31 - 1]"));
-    CHECK(EvalTruth(f.context, "[put('uint32', v) for v in (-1, 2**32, 1e20, -1.5)] == [2**32 - 1, 0, 1661992960, 2**32 - 1]"));
+    CHECK(EvalTruth(f.context,
+                    "[put('int32', v) for v in (2**31, 2**32 + 7, 4294967295.0, 1e20, -2**31 - 1)] == "
+                    "[-2**31, 7, -1, 1661992960, 2**31 - 1]"));
+    CHECK(EvalTruth(f.context,
+                    "[put('uint32', v) for v in (-1, 2**32, 1e20, -1.5)] == [2**32 - 1, 0, 1661992960, 2**32 - 1]"));
     CHECK(EvalTruth(f.context, "put('uint8', True) == 1 and put('int32', False) == 0"));
     // Uint8Clamped clamps, and rounds a half to the even neighbour.
     CHECK(EvalTruth(f.context, "[put('uint8clamped', v) for v in (300, -5, 2**100, -2**100)] == [255, 0, 255, 0]"));
-    CHECK(EvalTruth(f.context, "[put('uint8clamped', v) for v in (0.5, 1.5, 2.5, 3.49, 3.51, 253.5, 254.5, 254.6, nan, inf, -inf)] == "
-                               "[0, 2, 2, 3, 4, 254, 254, 255, 0, 255, 0]"));
+    CHECK(EvalTruth(
+        f.context,
+        "[put('uint8clamped', v) for v in (0.5, 1.5, 2.5, 3.49, 3.51, 253.5, 254.5, 254.6, nan, inf, -inf)] == "
+        "[0, 2, 2, 3, 4, 254, 254, 255, 0, 255, 0]"));
     // Float32 rounds to nearest; past the last float it overflows as rounding would.
     CHECK(EvalTruth(f.context, "put('float32', 0.1) == struct.unpack('f', struct.pack('f', 0.1))[0]"));
     CHECK(EvalTruth(f.context, "[put('float32', v) for v in (1e40, -1e40)] == [inf, -inf]"));
-    CHECK(EvalTruth(f.context, "put('float32', 3.4028235e38) == struct.unpack('f', struct.pack('f', 3.4028235e38))[0]"));
+    CHECK(
+        EvalTruth(f.context, "put('float32', 3.4028235e38) == struct.unpack('f', struct.pack('f', 3.4028235e38))[0]"));
     // FLT_MAX + half an ulp is the tie: below it FLT_MAX, at it even - which is infinity.
     CHECK(EvalTruth(f.context, "put('float32', 2.0**128 - 2.0**103 - 2.0**80) == 3.4028234663852886e38"));
     CHECK(EvalTruth(f.context, "put('float32', 2.0**128 - 2.0**103) == inf"));
@@ -296,12 +303,14 @@ nan, inf = float('nan'), float('inf')
     CHECK(EvalTruth(f.context, "all(same(put('float64', v), v) for v in (0.1, -0.0, nan, inf, 5e-324))"));
     CHECK(EvalTruth(f.context, "put('float64', 2**53 + 1) == 2.0**53"));  // an int rounds, as a double must
     // Float16, as struct's 'e' packs it - until the range ends, where it is infinity.
-    CHECK(EvalTruth(f.context, "all(put('float16', v) == struct.unpack('e', struct.pack('e', v))[0] "
-                               "for v in (1.0, 0.1, -2.5, 65504, 65519.99, 6e-8, 1e-8))"));
+    CHECK(EvalTruth(f.context,
+                    "all(put('float16', v) == struct.unpack('e', struct.pack('e', v))[0] "
+                    "for v in (1.0, 0.1, -2.5, 65504, 65519.99, 6e-8, 1e-8))"));
     CHECK(EvalTruth(f.context, "[put('float16', v) for v in (65520, 1e6, -1e6, inf)] == [inf, inf, -inf, inf]"));
     CHECK(EvalTruth(f.context, "same(put('float16', -0.0), -0.0) and same(put('float16', nan), nan)"));
     // The BigInt types take integers only, wrapping modulo 2^64.
-    CHECK(EvalTruth(f.context, "[put('bigint64', v) for v in (2**63, -1, 2**64 + 3, -2**63 - 1)] == [-2**63, -1, 3, 2**63 - 1]"));
+    CHECK(EvalTruth(f.context,
+                    "[put('bigint64', v) for v in (2**63, -1, 2**64 + 3, -2**63 - 1)] == [-2**63, -1, 3, 2**63 - 1]"));
     CHECK(EvalTruth(f.context, "[put('biguint64', v) for v in (-1, 2**64, 2**100 + 9)] == [2**64 - 1, 0, 9]"));
     CHECK(py_test::EvalError(f.context, "put('bigint64', 1.0)").starts_with("TypeError"));
     // A string is not a number here, as it is not to array.array.
@@ -332,7 +341,8 @@ TEST_CASE("binary: what script writes is what C++ reads, for every element type"
     read("TypedArray('uint16', [-2])", std::initializer_list<std::uint16_t>{65534});
     read("TypedArray('int32', [2**31, 1e20])", std::initializer_list<std::int32_t>{INT32_MIN, 1661992960});
     read("TypedArray('uint32', [-1])", std::initializer_list<std::uint32_t>{UINT32_MAX});
-    read("TypedArray('float32', [0.5, 1e40])", std::initializer_list<float>{0.5F, std::numeric_limits<float>::infinity()});
+    read("TypedArray('float32', [0.5, 1e40])",
+         std::initializer_list<float>{0.5F, std::numeric_limits<float>::infinity()});
     read("TypedArray('float64', [0.1, -2.5])", std::initializer_list<double>{0.1, -2.5});
     read("TypedArray('bigint64', [2**63, -5])", std::initializer_list<std::int64_t>{INT64_MIN, -5});
     read("TypedArray('biguint64', [-1])", std::initializer_list<std::uint64_t>{UINT64_MAX});
@@ -354,18 +364,22 @@ TEST_CASE("binary: what script writes is what C++ reads, for every element type"
 TEST_CASE("binary: the script-side TypedArray behaves as a sequence") {
     Fixture f;
     Run(f.context, "import unibind, struct\nfrom unibind import TypedArray, DataView");
-    CHECK(EvalTruth(f.context, "a = TypedArray('int32', [1, 2, 3, 4])\nlen(a) == 4 and a.length == 4 and list(a) == [1, 2, 3, 4]"));
+    CHECK(EvalTruth(
+        f.context, "a = TypedArray('int32', [1, 2, 3, 4])\nlen(a) == 4 and a.length == 4 and list(a) == [1, 2, 3, 4]"));
     CHECK(EvalTruth(f.context, "a[-1] == 4 and a[0] == 1 and 3 in a and 5 not in a"));
-    CHECK(EvalTruth(f.context, "a.byteLength == 16 and a.byteOffset == 0 and a.BYTES_PER_ELEMENT == 4 and a.type == 'int32'"));
+    CHECK(EvalTruth(f.context,
+                    "a.byteLength == 16 and a.byteOffset == 0 and a.BYTES_PER_ELEMENT == 4 and a.type == 'int32'"));
     CHECK(EvalTruth(f.context, "type(a.buffer) is bytearray and len(a.buffer) == 16"));
     CHECK(py_test::EvalError(f.context, "a[4]").starts_with("IndexError"));
     CHECK(py_test::EvalError(f.context, "a[-5] = 1").starts_with("IndexError"));
     CHECK(py_test::EvalError(f.context, "del a[0]").starts_with("TypeError"));
     CHECK(py_test::EvalError(f.context, "a['x']").starts_with("TypeError"));
     // A slice is a copy; subarray() shares.
-    CHECK(EvalTruth(f.context, "s = a[1:3]\ns[0] = 99\ns.tolist() == [99, 3] and a[1] == 2 and s.buffer is not a.buffer"));
+    CHECK(EvalTruth(f.context,
+                    "s = a[1:3]\ns[0] = 99\ns.tolist() == [99, 3] and a[1] == 2 and s.buffer is not a.buffer"));
     CHECK(EvalTruth(f.context, "a[::-2].tolist() == [4, 2]"));
-    CHECK(EvalTruth(f.context, "sub = a.subarray(1, -1)\nsub[0] = 42\na[1] == 42 and sub.byteOffset == 4 and len(sub) == 2"));
+    CHECK(EvalTruth(f.context,
+                    "sub = a.subarray(1, -1)\nsub[0] = 42\na[1] == 42 and sub.byteOffset == 4 and len(sub) == 2"));
     CHECK(EvalTruth(f.context, "len(a.subarray(3, 1)) == 0 and a.subarray(-2).tolist() == [3, 4]"));
     // Slice assignment converts every element, and needs exactly the slice's length.
     CHECK(EvalTruth(f.context, "a[0:2] = [7.9, 2**32 + 8]\na.tolist()[:2] == [7, 8]"));
@@ -379,7 +393,9 @@ TEST_CASE("binary: the script-side TypedArray behaves as a sequence") {
     CHECK(EvalTruth(f.context, "TypedArray('int8', range(3)).tolist() == [0, 1, 2]"));
     CHECK(EvalTruth(f.context, "TypedArray('int8').tolist() == [] and len(TypedArray('uint8', None)) == 0"));
     CHECK(EvalTruth(f.context, "c = TypedArray('uint8', TypedArray('float32', [1.5, 300]))\nc.tolist() == [1, 44]"));
-    CHECK(EvalTruth(f.context, "b = bytearray(8)\nv = TypedArray('Int16Array', b, byteOffset=2)\nlen(v) == 3 and v.byteOffset == 2"));
+    CHECK(EvalTruth(
+        f.context,
+        "b = bytearray(8)\nv = TypedArray('Int16Array', b, byteOffset=2)\nlen(v) == 3 and v.byteOffset == 2"));
     CHECK(EvalTruth(f.context, "v[0] = -1\nb[2:4] == b'\\xff\\xff'"));
     CHECK(py_test::EvalError(f.context, "TypedArray('int32', bytearray(8), 2)").starts_with("unibind.RangeError"));
     CHECK(py_test::EvalError(f.context, "TypedArray('int32', bytearray(7))").starts_with("unibind.RangeError"));
@@ -396,8 +412,9 @@ TEST_CASE("binary: the script-side TypedArray behaves as a sequence") {
     CHECK(EvalTruth(f.context, "r = TypedArray('uint8', b'\\x01\\x02')\nr.tolist() == [1, 2]"));
     CHECK(py_test::EvalError(f.context, "r[0] = 5").starts_with("TypeError"));
     // The buffer protocol shows the view's own window, typed.
-    CHECK(EvalTruth(f.context, "m = memoryview(TypedArray('int16', bytearray(b'\\x00\\x00\\x01\\x00\\x02\\x00'), 2))\n"
-                               "m.format == 'h' and m.itemsize == 2 and m.tolist() == [1, 2] and not m.readonly"));
+    CHECK(EvalTruth(f.context,
+                    "m = memoryview(TypedArray('int16', bytearray(b'\\x00\\x00\\x01\\x00\\x02\\x00'), 2))\n"
+                    "m.format == 'h' and m.itemsize == 2 and m.tolist() == [1, 2] and not m.readonly"));
     CHECK(EvalTruth(f.context, "bytes(TypedArray('uint16', [0x0102])) == b'\\x02\\x01'"));
     CHECK(EvalTruth(f.context, "struct.unpack_from('<i', TypedArray('int32', [-7]))[0] == -7"));
     CHECK(EvalTruth(f.context, "memoryview(r).readonly"));
@@ -410,13 +427,21 @@ TEST_CASE("binary: the script-side DataView reads and writes in either byte orde
     Run(f.context, "from unibind import DataView, TypedArray\nbuf = bytearray(16)\nd = DataView(buf, 4)");
     CHECK(EvalTruth(f.context, "d.byteOffset == 4 and d.byteLength == 12 and d.buffer is buf"));
     CHECK(EvalTruth(f.context, "d.setUint16(0, 0x1234)\nbuf[4:6] == b'\\x12\\x34' and d.getUint16(0) == 0x1234"));
-    CHECK(EvalTruth(f.context, "d.setUint16(0, 0x1234, True)\nbuf[4:6] == b'\\x34\\x12' and d.getUint16(0, littleEndian=True) == 0x1234"));
-    CHECK(EvalTruth(f.context, "d.setInt32(2, -2)\nd.getInt32(2) == -2 and d.getUint32(2) == 2**32 - 2 and d.getInt32(2, True) == -16777217"));
-    CHECK(EvalTruth(f.context, "d.setFloat32(0, 1.5, True)\nd.getFloat32(0, True) == 1.5 and bytes(buf[4:8]) == b'\\x00\\x00\\xc0\\x3f'"));
+    CHECK(EvalTruth(
+        f.context,
+        "d.setUint16(0, 0x1234, True)\nbuf[4:6] == b'\\x34\\x12' and d.getUint16(0, littleEndian=True) == 0x1234"));
+    CHECK(EvalTruth(
+        f.context,
+        "d.setInt32(2, -2)\nd.getInt32(2) == -2 and d.getUint32(2) == 2**32 - 2 and d.getInt32(2, True) == -16777217"));
+    CHECK(EvalTruth(
+        f.context,
+        "d.setFloat32(0, 1.5, True)\nd.getFloat32(0, True) == 1.5 and bytes(buf[4:8]) == b'\\x00\\x00\\xc0\\x3f'"));
     CHECK(EvalTruth(f.context, "d.setFloat64(4, -0.1)\nd.getFloat64(4) == -0.1"));
     CHECK(EvalTruth(f.context, "d.setFloat16(0, 1.0)\nbuf[4:6] == b'\\x3c\\x00' and d.getFloat16(0) == 1.0"));
-    CHECK(EvalTruth(f.context, "d.setBigInt64(4, -1)\nd.getBigUint64(4) == 2**64 - 1 and d.getBigInt64(4, True) == -1"));
-    CHECK(EvalTruth(f.context, "d.setBigUint64(4, 1, True)\nd.getBigUint64(4, True) == 1 and d.getBigUint64(4) == 2**56"));
+    CHECK(
+        EvalTruth(f.context, "d.setBigInt64(4, -1)\nd.getBigUint64(4) == 2**64 - 1 and d.getBigInt64(4, True) == -1"));
+    CHECK(EvalTruth(f.context,
+                    "d.setBigUint64(4, 1, True)\nd.getBigUint64(4, True) == 1 and d.getBigUint64(4) == 2**56"));
     CHECK(EvalTruth(f.context, "d.setInt8(11, 200)\nd.getInt8(11) == -56 and d.getUint8(11) == 200"));
     // An offset past the view's end is a RangeError - including one the element
     // would only partly fit at - and a negative offset is too.
@@ -513,7 +538,8 @@ class Shrinker:
 
 TEST_CASE("binary: an exported view pins its buffer's size") {
     Fixture f;
-    Run(f.context, "from unibind import TypedArray\nbuf = bytearray(8)\nv = TypedArray('uint16', buf)\nm = memoryview(v)");
+    Run(f.context,
+        "from unibind import TypedArray\nbuf = bytearray(8)\nv = TypedArray('uint16', buf)\nm = memoryview(v)");
     CHECK(py_test::EvalError(f.context, "del buf[:]").starts_with("BufferError"));
     Run(f.context, "m.release()\ndel buf[:]");
     CHECK(EvalInt(f.context, "len(v)") == 0);

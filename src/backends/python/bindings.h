@@ -296,8 +296,8 @@ inline constexpr const char* MIRRORED_KEY = "__unibind_mirrored__";
 /// what the callback's `IsConstructCall()` says - false only for a class that
 /// opted into `ConstructOrCall` being called plainly. New reference, or null
 /// with the exception pending.
-[[nodiscard]] PyObject* ConstructTemplate(Isolate& isolate, PyTypeObject* type, TemplateRec* tpl,
-                                          PyObject* const* args, std::size_t argc, bool isConstruct = true) noexcept;
+[[nodiscard]] PyObject* ConstructTemplate(Isolate& isolate, PyTypeObject* type, TemplateRec* tpl, PyObject* const* args,
+                                          std::size_t argc, bool isConstruct = true) noexcept;
 
 // --- objects.cpp, for bindings.cpp ---------------------------------------------------
 

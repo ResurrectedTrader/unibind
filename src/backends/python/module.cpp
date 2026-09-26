@@ -127,7 +127,8 @@ int NullBool(PyObject* /*self*/) {
 PyType_Slot nullSlots[] = {
     {Py_tp_repr, reinterpret_cast<void*>(&NullRepr)},
     {Py_nb_bool, reinterpret_cast<void*>(&NullBool)},
-    {Py_tp_doc, const_cast<char*>("The type of `unibind.null`, ub::Null: a value distinct from None, which is undefined.")},
+    {Py_tp_doc,
+     const_cast<char*>("The type of `unibind.null`, ub::Null: a value distinct from None, which is undefined.")},
     {0, nullptr},
 };
 
@@ -226,11 +227,7 @@ PyType_Slot symbolSlots[] = {
 };
 
 PyType_Spec symbolSpec = {
-    "unibind.Symbol",
-    sizeof(SymbolObject),
-    0,
-    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
-    symbolSlots,
+    "unibind.Symbol", sizeof(SymbolObject), 0, Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC, symbolSlots,
 };
 
 // ---------------------------------------------------------------------------

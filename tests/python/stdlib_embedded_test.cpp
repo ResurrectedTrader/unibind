@@ -11,8 +11,6 @@
 // program in an empty directory, with nothing on disk to find; and with
 // UNIBIND_PYTHON_HOME pointing at the build's `Lib`, which must win.
 
-#include "support.h"
-
 #include <windows.h>
 
 #include <algorithm>
@@ -22,6 +20,8 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#include "support.h"
 
 using py_test::EvalText;
 using py_test::EvalTruth;
@@ -263,4 +263,3 @@ TEST_CASE("stdlib embedded: isolate start-up, measured") {
             << std::string(StandardLibraryFromDisk() ? "from disk" : "embedded") << ": median " << ms[kIsolates / 2]
             << " ms, fastest " << ms.front() << " ms");
 }
-

@@ -26,6 +26,8 @@
 //     in `Isolate::Impl::liveNatives` so that each box is given back exactly
 //     once - by the instance's deallocation, or by `~Isolate` for survivors.
 
+#include "bindings.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -33,8 +35,6 @@
 #include <string>
 #include <utility>
 #include <vector>
-
-#include "bindings.h"
 
 namespace ub::detail {
 
@@ -276,8 +276,7 @@ void SetReturnInteger(const CallbackState& state, std::int32_t value) noexcept {
 namespace {
 
 struct FunctionObject {
-    PyObject_HEAD
-    vectorcallfunc vectorcall;
+    PyObject_HEAD vectorcallfunc vectorcall;
     FunctionCallback callback;
     CallbackData data;
     /// `Function::New` with a script value: held here and nowhere else, and
@@ -296,8 +295,7 @@ struct FunctionObject {
 };
 
 struct BoundObject {
-    PyObject_HEAD
-    vectorcallfunc vectorcall;
+    PyObject_HEAD vectorcallfunc vectorcall;
     PyObject* function;  ///< a FunctionObject
     PyObject* receiver;
     PyObject* weaklist;
@@ -892,7 +890,8 @@ bool InterceptEnumerate(Isolate& isolate, TemplateRec* shape, PyObject* receiver
         }
         HookCall call(isolate, receiver, receiver, named ? shape->named.data : shape->indexed.data);
         std::optional<Local<Array>> listed;
-        Shielded([&] { listed = named ? shape->named.enumerator(call.Info()) : shape->indexed.enumerator(call.Info()); });
+        Shielded(
+            [&] { listed = named ? shape->named.enumerator(call.Info()) : shape->indexed.enumerator(call.Info()); });
         if (PyErr_Occurred() != nullptr) {
             return false;
         }
@@ -933,8 +932,7 @@ bool InterceptEnumerate(Isolate& isolate, TemplateRec* shape, PyObject* receiver
 namespace {
 
 struct AdapterObject {
-    PyObject_HEAD
-    PyObject* iterator;
+    PyObject_HEAD PyObject* iterator;
 };
 
 void AdapterDealloc(PyObject* self) {
@@ -1095,7 +1093,8 @@ struct TemplateTypeObject {
 /// a `unibind.Object` do. Everything else on the type is Python's to change.
 int TemplateTypeSetAttr(PyObject* type, PyObject* name, PyObject* value) {
     if (const TemplateEntry* entry = StaticNamed(type, name); entry != nullptr) {
-        const PropertyAttribute refused = value != nullptr ? PropertyAttribute::ReadOnly : PropertyAttribute::DontDelete;
+        const PropertyAttribute refused =
+            value != nullptr ? PropertyAttribute::ReadOnly : PropertyAttribute::DontDelete;
         if (HasAttribute(entry->attributes, refused)) {
             PyErr_Format(PyExc_TypeError,
                          value != nullptr ? "Cannot assign to read only property '%U' of %s"
@@ -1233,8 +1232,8 @@ void Seal(TemplateRec* rec) noexcept {
             *value = NewFunction(isolate, realm, entry.callback, entry.data, nullptr, entry.name);
             break;
         case TemplateEntry::Kind::SymbolMethod:
-            *value = NewFunction(isolate, realm, entry.callback, entry.data, nullptr,
-                                 SymbolMethodName(entry.symbolKey));
+            *value =
+                NewFunction(isolate, realm, entry.callback, entry.data, nullptr, SymbolMethodName(entry.symbolKey));
             break;
         case TemplateEntry::Kind::Accessor:
             return true;
@@ -1273,9 +1272,8 @@ void Seal(TemplateRec* rec) noexcept {
         if (entry.kind == TemplateEntry::Kind::Accessor) {
             ok = DefineAccessorRaw(target, key, entry.record, entry.attributes);
         } else {
-            const PropertyAttribute attributes = entry.kind == TemplateEntry::Kind::SymbolMethod
-                                                     ? PropertyAttribute::DontEnum
-                                                     : entry.attributes;
+            const PropertyAttribute attributes =
+                entry.kind == TemplateEntry::Kind::SymbolMethod ? PropertyAttribute::DontEnum : entry.attributes;
             ok = DefineRaw(target, key, value, static_cast<long>(attributes));
         }
         Py_XDECREF(value);
@@ -1307,8 +1305,7 @@ void Seal(TemplateRec* rec) noexcept {
         if (name == nullptr && entry.kind != TemplateEntry::Kind::SymbolMethod) {
             name = TextString(entry.name);  // an index-like name, as the text it was declared as
         }
-        const bool ok = name == nullptr ? PyErr_Occurred() == nullptr
-                                        : PyType_Type.tp_setattro(type, name, value) == 0;
+        const bool ok = name == nullptr ? PyErr_Occurred() == nullptr : PyType_Type.tp_setattro(type, name, value) == 0;
         Py_XDECREF(name);
         Py_DECREF(value);
         Py_DECREF(key);
@@ -1503,8 +1500,7 @@ ObjectInstance* NewTemplateInstance(Isolate& isolate, ContextRec* realm, Templat
     // and what makes a Python subclass's instances inherit what its class
     // inherits.
     PyObject* prototype = constructor != nullptr ? PrototypeOf(isolate, madeAs) : nullptr;
-    ObjectInstance* instance =
-        NewObjectInstance(isolate, reinterpret_cast<PyTypeObject*>(madeAs), prototype);
+    ObjectInstance* instance = NewObjectInstance(isolate, reinterpret_cast<PyTypeObject*>(madeAs), prototype);
     Py_XDECREF(prototype);
     Py_DECREF(madeAs);
     if (instance == nullptr) {
@@ -1719,7 +1715,8 @@ namespace {
 
 }  // namespace
 
-std::optional<Slot> CallFunction(const Context& context, Slot function, Slot receiver, std::span<const Slot> arguments) {
+std::optional<Slot> CallFunction(const Context& context, Slot function, Slot receiver,
+                                 std::span<const Slot> arguments) {
     Isolate& isolate = OwnerOf(context);
     const ScriptGate gate(isolate);
     if (!gate.Open()) {
@@ -1938,8 +1935,7 @@ std::optional<bool> TemplateHasInstance(const Context& context, TemplateRec* tpl
     if (!IsObjectInstance(isolate, object)) {
         return false;
     }
-    for (TemplateRec* maker = reinterpret_cast<ObjectInstance*>(object)->tpl; maker != nullptr;
-         maker = maker->parent) {
+    for (TemplateRec* maker = reinterpret_cast<ObjectInstance*>(object)->tpl; maker != nullptr; maker = maker->parent) {
         if (maker == tpl) {
             return true;
         }

@@ -209,8 +209,8 @@ enum class Outcome : std::uint8_t {
         if (hooks) {
             if (TemplateRec* shape = ShapeOf(object); shape != nullptr && HasHandlerFor(shape, key)) {
                 PyObject* answer = nullptr;
-                const Hook hook = InterceptGet(isolate, shape, key, reinterpret_cast<PyObject*>(receiver), holder,
-                                               &answer);
+                const Hook hook =
+                    InterceptGet(isolate, shape, key, reinterpret_cast<PyObject*>(receiver), holder, &answer);
                 if (hook != Hook::Declined) {
                     Py_DECREF(holder);
                     *found = hook == Hook::Handled;
@@ -229,10 +229,10 @@ enum class Outcome : std::uint8_t {
             *found = true;
             if ((attributes & ATTR_ACCESSOR) != 0) {
                 const CallbackRecord* record = RecordOf(value);
-                PyObject* result = record != nullptr && record->getter != nullptr
-                                       ? RunAccessorGetter(isolate, *record, key,
-                                                           reinterpret_cast<PyObject*>(receiver), holder)
-                                       : Py_NewRef(Py_None);
+                PyObject* result =
+                    record != nullptr && record->getter != nullptr
+                        ? RunAccessorGetter(isolate, *record, key, reinterpret_cast<PyObject*>(receiver), holder)
+                        : Py_NewRef(Py_None);
                 Py_DECREF(value);
                 Py_DECREF(holder);
                 return result;
@@ -257,8 +257,8 @@ enum class Outcome : std::uint8_t {
 /// A setter hook is asked only about a write made on the object itself, as
 /// V8 asks it; a write through something inheriting from an intercepted
 /// object is the ordinary set.
-[[nodiscard]] Outcome SetChain(Isolate& isolate, ObjectInstance* receiver, PyObject* key, PyObject* value,
-                               bool hooks, bool* getterOnly) noexcept {
+[[nodiscard]] Outcome SetChain(Isolate& isolate, ObjectInstance* receiver, PyObject* key, PyObject* value, bool hooks,
+                               bool* getterOnly) noexcept {
     *getterOnly = false;
     PyObject* self = reinterpret_cast<PyObject*>(receiver);
     if (hooks) {
@@ -895,8 +895,7 @@ void ObjectDealloc(PyObject* self) {
     ObjectInstance* object = AsInstance(self);
     PyTypeObject* type = Py_TYPE(self);
     PyObject_GC_UnTrack(self);
-    Py_TRASHCAN_BEGIN(self, ObjectDealloc)
-    if (object->weaklist != nullptr) {
+    Py_TRASHCAN_BEGIN(self, ObjectDealloc) if (object->weaklist != nullptr) {
         PyObject_ClearWeakRefs(self);
     }
     ReleaseBox(object);
@@ -1479,10 +1478,7 @@ PyType_Slot objectSlots[] = {
 };
 
 PyType_Spec objectSpec = {
-    "unibind.Object",
-    sizeof(ObjectInstance),
-    0,
-    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HAVE_GC,
+    "unibind.Object", sizeof(ObjectInstance), 0, Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HAVE_GC,
     objectSlots,
 };
 
@@ -1521,9 +1517,9 @@ bool DefineAccessorRaw(ObjectInstance* object, PyObject* key, CallbackRecord* re
                        PropertyAttribute attributes) noexcept {
     // An accessor has no [[Writable]]: a getter with no setter is the
     // read-only form, and ReadOnly is dropped, as both other backends drop it.
-    const long bits = (static_cast<long>(attributes) & ~static_cast<long>(PropertyAttribute::ReadOnly) &
-                       ATTRIBUTE_MASK) |
-                      ATTR_ACCESSOR;
+    const long bits =
+        (static_cast<long>(attributes) & ~static_cast<long>(PropertyAttribute::ReadOnly) & ATTRIBUTE_MASK) |
+        ATTR_ACCESSOR;
     PyObject* capsule = PyCapsule_New(record, ACCESSOR_CAPSULE, nullptr);
     if (capsule == nullptr) {
         return false;
@@ -1844,8 +1840,8 @@ std::optional<bool> DeleteProperty(const Context& context, Slot object, Slot key
         } else {
             // `delete a[i]` leaves a hole and does not shift the rest: here,
             // `None` in its place.
-            answer = PyList_SetItem(target, position, Py_NewRef(Py_None)) == 0 ? std::optional<bool>(true)
-                                                                                : std::nullopt;
+            answer =
+                PyList_SetItem(target, position, Py_NewRef(Py_None)) == 0 ? std::optional<bool>(true) : std::nullopt;
         }
     } else if (PyObject* name = AttributeName(op.isolate, normalized); name != nullptr) {
         if (PyObject_DelAttr(target, name) == 0) {

@@ -8,8 +8,8 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
-#include <set>
 #include <optional>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -210,8 +210,9 @@ TEST_CASE("lifetimes: a native's destructor gives back its own realm and root, a
         Run(f.context, "freed = []\nclass Payload: pass");
         // One collected while the isolate lives: its destructor releases a
         // Global from inside a deallocation, and the Payload goes with it.
-        Run(f.context, "a = Tracked(1)\np = Payload()\nwp = weakref.ref(p, lambda _: freed.append('a'))\n"
-                       "a.holdOnly(p)\ndel p\ndel a");
+        Run(f.context,
+            "a = Tracked(1)\np = Payload()\nwp = weakref.ref(p, lambda _: freed.append('a'))\n"
+            "a.holdOnly(p)\ndel p\ndel a");
         CHECK(Tracked::destroyed == 1);
         CHECK(EvalTruth(f.context, "freed == ['a']"));
 
@@ -221,8 +222,9 @@ TEST_CASE("lifetimes: a native's destructor gives back its own realm and root, a
         auto other = ub::Context::New(f.iso());
         REQUIRE(other.has_value());
         Expose(*other, "Tracked", *f.cls.GetConstructor(*other));
-        Run(*other, "import weakref\nclass Payload: pass\nq = Payload()\nsurvivor = Tracked(2)\nsurvivor.hold(q)\n"
-                    "watch = weakref.ref(q)");
+        Run(*other,
+            "import weakref\nclass Payload: pass\nq = Payload()\nsurvivor = Tracked(2)\nsurvivor.hold(q)\n"
+            "watch = weakref.ref(q)");
         Run(f.context, "import builtins");
         other.reset();
         Run(f.context, "gc.collect()");
@@ -374,8 +376,9 @@ void KeepsReceiver(const ub::CallbackInfo& info) {
 TEST_CASE("lifetimes: a receiver kept in a Global past the call, and released later") {
     Fixture f;
     Expose(f.context, "keep", Native(f.context, &KeepsReceiver));
-    Run(f.context, "o = unibind.Object()\no.keep = keep\no.name = 'the object'\nwo = weakref.ref(o)\n"
-                   "o.keep()\ndel o\ngc.collect()");
+    Run(f.context,
+        "o = unibind.Object()\no.keep = keep\no.name = 'the object'\nwo = weakref.ref(o)\n"
+        "o.keep()\ndel o\ngc.collect()");
     CHECK(EvalTruth(f.context, "wo() is not None"));
     {
         const ub::HandleScope scope(f.iso());

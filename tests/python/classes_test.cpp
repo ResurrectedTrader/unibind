@@ -303,11 +303,11 @@ TEST_CASE("classes: an instance-template accessor is an own property of every in
     Counter::Reset();
     Fixture f;
     const auto cls = DeclareCounter(f.iso());
-    cls.InstanceTemplate().SetAccessor(
-        "own", [](const ub::Local<ub::Name>& /*name*/, const ub::PropertyCallbackInfo& info) {
-            Counter* self = ub::Class<Counter>::Unwrap(info.This());
-            info.GetReturnValue().Set(self != nullptr ? self->value : -1);
-        });
+    cls.InstanceTemplate().SetAccessor("own",
+                                       [](const ub::Local<ub::Name>& /*name*/, const ub::PropertyCallbackInfo& info) {
+                                           Counter* self = ub::Class<Counter>::Unwrap(info.This());
+                                           info.GetReturnValue().Set(self != nullptr ? self->value : -1);
+                                       });
     cls.InstanceTemplate().Set("tag", ub::Constant(std::string_view("counted")));
     Expose(f.context, "Counter", *cls.GetConstructor(f.context));
 
