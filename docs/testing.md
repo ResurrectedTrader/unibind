@@ -964,11 +964,6 @@ backend's own C++ heap exactly and make its allocations fail on purpose.
   suite, so a missing standard library cannot be provoked in it.
 - **Any regular run.** The suite passes Release and Debug on x64 and Release on
   x86, run by hand; no CI job runs it.
-- **Many isolates at once against a debug CPython.** Its debug heap has reported
-  corruption inside CPython with more than a couple of isolates running
-  concurrently (`docs/python.md` section 11, a known issue under
-  investigation), so against a debug build the concurrent cases run two threads
-  rather than eight. Release runs eight.
 
 ### No case name has a `;`
 

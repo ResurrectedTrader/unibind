@@ -1126,16 +1126,6 @@ and the environment the moment a script says `import os`, and removing things fr
 `builtins` does not take any of it away. Run only Python you would run as the
 host process, or contain the process with the operating system.
 
-### A debug CPython can report heap corruption with isolates on several threads
-
-**Loud, and not yours.** With more than a couple of isolates running at once on
-different threads, a `Py_DEBUG` CPython's debug heap has reported a block freed
-by an interpreter whose allocator did not make it, and then crashed - inside
-CPython, reproducible with nothing evaluated. It is a known issue under
-investigation; a release CPython has not shown it in any run. If a Debug build of
-an embedding that runs many isolates concurrently dies in `_CrtIsValidHeapPointer`,
-this is the first suspect.
-
 ### A 32-bit program runs out of address space after a few hundred isolates
 
 **Silent, then everything crawls.** Every isolate keeps about 9.5 MB for good

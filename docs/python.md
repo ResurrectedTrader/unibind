@@ -1223,16 +1223,22 @@ decides how an embedding is shaped:
   6.4 is what the backend does about it: stop them, wait two seconds, and leave
   the interpreter behind - and, at `~Platform`, possibly CPython unfinalized -
   when one is stuck in a call that never returns.
-- **A debug CPython can report heap corruption with several isolates running at
-  once.** With more than a couple of isolates running concurrently on different
-  threads, a `Py_DEBUG` CPython's debug heap has reported a block freed by an
-  interpreter whose allocator did not make it (`_CrtIsValidHeapPointer`, then an
-  access violation) - inside CPython, with the backend's allocator hooks switched
-  off too, with isolate creation and teardown serialised, and with next to nothing
-  evaluated. It is under investigation and is a known issue of this backend under
-  a debug CPython. **A release CPython has not shown it in any run**; the suite's
-  concurrent cases run two threads rather than eight against a debug build
-  (`CONCURRENT_THREADS` in `teardown_test.cpp`).
+- **Starting an interpreter swapped the process's RAW allocator - fixed here.**
+  Every new interpreter's start ends in `_Py_ClearStandardStreamEncoding()`, which
+  in 3.12 switches the process-wide `PYMEM_DOMAIN_RAW` allocator to the default
+  and back even when it has nothing to free, while other own-GIL interpreters
+  read that allocator without a lock on other threads. A `Py_DEBUG` CPython
+  installs the default in two steps, so a block another isolate allocated or
+  freed in that moment went through the wrong allocator: its debug heap reported
+  a block freed by an interpreter that did not make it, then crashed, with more
+  than a couple of isolates starting at once. A release CPython writes identical
+  values and cannot fail that way - unless something wraps the RAW allocator
+  (debug hooks, tracemalloc, an embedder's own), and then it corrupts its heap
+  the same way. The overlay port's patch 0103 skips the switch when there is
+  nothing to free, which is always after the main interpreter's first start;
+  `cmake/vcpkg-ports/README.md` has the detail. `concurrency_test.cpp` is the
+  repro - eight threads making, using and destroying isolates at once - and every
+  concurrent case now runs at full thread count in Debug and Release alike.
 - **No daemon threads** also means library code that makes one fails:
   `subprocess.run(..., capture_output=True)` raises `RuntimeError: daemon threads
   are disabled in this interpreter`, because its Windows implementation reads the
@@ -1268,11 +1274,12 @@ library is a substitute.
 ## 13. Build notes, and what an upgrade has to recheck
 
 - **The overlay port** (`cmake/vcpkg-ports/python3`) is the registry's port at
-  the manifest baseline with three patches of ours: 0100 makes `/GL` respect
+  the manifest baseline with four patches of ours: 0100 makes `/GL` respect
   `WholeProgramOptimization=false`, because `lld-link` cannot read LTCG objects
   and `link.exe` reads only its own version's; 0101 builds the extension modules
   in and applies the single-phase check to built-ins; 0102 lets asyncio's
-  Proactor loop be made in a sub-interpreter. Its README says how to re-apply
+  Proactor loop be made in a sub-interpreter; 0103 stops every new interpreter
+  swapping the process-wide RAW allocator (section 11). Its README says how to re-apply
   them when the baseline moves.
 - **The first configure builds CPython**, and with it OpenSSL, libffi, SQLite,
   expat, liblzma and bzip2, for the triplet, plus a host CPython vcpkg needs to

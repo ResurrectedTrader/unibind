@@ -110,10 +110,10 @@ lifetimes_support.h what the lifetime and teardown cases share
   registers it, and each half is a filter that matches nothing, which passes. Two cases
   in `runtime_test.cpp` had one, and ran only in the whole-suite test until
   they were renamed.
-- **Run isolates concurrently on two threads, not eight, against a debug
-  CPython.** Its debug heap has reported corruption inside CPython with more
-  than a couple of isolates running at once (`docs/python.md` section 11, a known
-  issue); the concurrent cases size themselves by `NDEBUG`.
+- **Run concurrent cases at full thread count in Debug too.** A debug CPython
+  is where a race inside CPython shows up: `concurrency_test.cpp` found the one
+  patch 0103 fixes (`docs/python.md` section 11), and would not have at two
+  threads.
 - **Size isolate counts for x86**, where every isolate keeps about 9.5 MB of a
   32-bit address space for good; the cases that make many scale down there.
 - **A case written against a promise stays red rather than weakened**, as in the

@@ -24,7 +24,7 @@ tracked file under it, and it is prose.
 **One directory is not the authors' own**, and it is the exception worth
 knowing: `cmake/vcpkg-ports/python3/` is vcpkg's `python3` port, copied and
 changed. Its `portfile.cmake`, `vcpkg.json` and the rest are vcpkg's, under
-vcpkg's MIT licence (Microsoft); its `.patch` files - vcpkg's and the three
+vcpkg's MIT licence (Microsoft); its `.patch` files - vcpkg's and the four
 added here - are diffs against CPython's source, and quote lines of it as
 context, under the PSF license. Nothing else of CPython is in the tree: vcpkg
 downloads the source and builds it at configure time.
@@ -151,7 +151,7 @@ What you owe:
    included.
 2. **A brief summary of the changes** (§3). The PSF license asks it of anyone who
    makes a derivative work available, and a CPython built with patches is one:
-   the registry port's patches and the three added here
+   the registry port's patches and the four added here
    (`cmake/vcpkg-ports/README.md` describes ours, each with its reason, and the
    port's other patches are named in its `portfile.cmake`). Shipping that README,
    or a paragraph made from it, discharges this.
