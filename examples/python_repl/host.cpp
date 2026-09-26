@@ -329,7 +329,7 @@ void Gc(const ub::CallbackInfo& info) {
 /// taking it out of the table first means a callback that clears itself, or
 /// sets a new timer, sees a consistent table.
 void FireTimer(ub::Isolate& isolate, ub::CallbackData data) {
-    Host::Timer* timer = data.As<Host::Timer>();
+    auto* timer = data.As<Host::Timer>();
     if (timer == nullptr) {
         return;
     }
@@ -396,7 +396,7 @@ void ClearTimeout(const ub::CallbackInfo& info) {
 /// Settles a `host.fetch_later` promise. Its continuations - the `await` that
 /// is waiting on it - run in the same pump, before the next posted job.
 void SettleLater(ub::Isolate& isolate, ub::CallbackData data) {
-    Host::Pending* pending = data.As<Host::Pending>();
+    auto* pending = data.As<Host::Pending>();
     if (pending == nullptr) {
         return;
     }
@@ -687,6 +687,9 @@ void CounterAlive(const ub::CallbackInfo& info) {
 /// adapts its JavaScript-style `next()` into Python's iteration protocol.
 void CounterIterate(Counter& self, const ub::CallbackInfo& info) {
     const Host* host = HostOf(info);
+    if (!host->countUpClass) {
+        return;
+    }
     const auto iterator =
         host->countUpClass->Wrap(info.GetContext(), std::make_shared<CountUp>(CountUp{.next = 0, .end = self.value}));
     if (iterator) {
@@ -716,7 +719,7 @@ void CountUpNext(CountUp& self, const ub::CallbackInfo& info) {
 void SharedCounter(const ub::CallbackInfo& info) {
     Host* host = HostOf(info);
     const auto name = TextOf(info.GetContext(), info[0]);
-    if (!name) {
+    if (!name || !host->counterClass) {
         return;
     }
     auto& share = host->registry[*name];
@@ -772,7 +775,11 @@ void Vec2Y(Vec2& self, const ub::PropertyCallbackInfo& info) {
 /// Hands script a new Vec2. `Wrap` makes an instance without running the
 /// script constructor.
 void ReturnVec2(const ub::CallbackInfo& info, Vec2 value) {
-    if (const auto made = HostOf(info)->vec2Class->Wrap(info.GetContext(), std::make_shared<Vec2>(value))) {
+    const Host* host = HostOf(info);
+    if (!host->vec2Class) {
+        return;
+    }
+    if (const auto made = host->vec2Class->Wrap(info.GetContext(), std::make_shared<Vec2>(value))) {
         info.GetReturnValue().Set(*made);
     }
 }
@@ -801,7 +808,7 @@ void Vec2Sub(Vec2& self, const ub::CallbackInfo& info) {
 
 void Vec2Dot(Vec2& self, const ub::CallbackInfo& info) {
     if (const Vec2* other = OtherVec2(info, "dot")) {
-        info.GetReturnValue().Set(self.x * other->x + self.y * other->y);
+        info.GetReturnValue().Set((self.x * other->x) + (self.y * other->y));
     }
 }
 
@@ -918,6 +925,9 @@ void KindOf(const ub::CallbackInfo& info) {
     std::uint32_t at = 0;
     for (const auto& [name, type] : {std::pair{"Circle", &host->circleType}, std::pair{"Rect", &host->rectType},
                                      std::pair{"Shape", &host->shapeType}}) {
+        if (!*type) {
+            return;
+        }
         const auto is = (*type)->HasInstance(context, info[0]);
         if (!is) {
             return;

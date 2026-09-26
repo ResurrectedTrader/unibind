@@ -106,7 +106,7 @@ namespace {
 // ---------------------------------------------------------------------------
 
 RealmScope::RealmScope(Isolate& isolate, ContextRec* rec) noexcept
-    : state(StateOf(isolate)), previous(nullptr), rec(rec), frame(PyEval_GetFrame()) {
+    : state(StateOf(isolate)), rec(rec), frame(PyEval_GetFrame()) {
     if (state != nullptr) {
         previous = state->realmScope;
         state->realmScope = this;
@@ -160,23 +160,23 @@ NativeCall::NativeCall(Isolate& isolate, PyObject* const* args, std::uint32_t ar
     : impl_(isolate.impl()), saved_(isolate.impl().current), frame_(isolate, saved_, args, argc) {
     impl_.current = &frame_;
     ++impl_.nativeDepth;
-    state.owner = &isolate;
-    state.frame = &frame_;
-    state.argc = argc;
+    state_.owner = &isolate;
+    state_.frame = &frame_;
+    state_.argc = argc;
     if (realm != nullptr) {
-        state.context = Context::FromRec(realm);
+        state_.context = Context::FromRec(realm);
     }
 }
 
 NativeCall::~NativeCall() {
-    Py_CLEAR(state.result);
+    Py_CLEAR(state_.result);
     assert(impl_.current == &frame_ && "a HandleScope opened in a callback outlived the callback");
     --impl_.nativeDepth;
     impl_.current = saved_;
 }
 
 PyObject* NativeCall::TakeResult() noexcept {
-    return std::exchange(state.result, nullptr);
+    return std::exchange(state_.result, nullptr);
 }
 
 namespace {
@@ -309,10 +309,6 @@ struct BoundObject {
     return reinterpret_cast<BoundObject*>(object);
 }
 
-[[nodiscard]] bool IsBoundFunction(Isolate& isolate, PyObject* value) noexcept {
-    return Py_TYPE(value) == isolate.impl().types.boundFunction;
-}
-
 /// The receiver a callback sees as `This()`: always an object, as
 /// `unibind/function.h` promises - a call with no receiver, or with None or
 /// null, gets the realm's global object, which is its globals dict. Any
@@ -342,14 +338,14 @@ struct BoundObject {
     PyObject* value = Py_XNewRef(function->value);
 
     NativeCall call(isolate, args, static_cast<std::uint32_t>(argc), realm);
-    call.state.thisSlot = call.Push(ReceiverFor(isolate, receiver, realm));
-    call.state.holderSlot = call.state.thisSlot;
-    call.state.data = function->data;
+    call.state().thisSlot = call.Push(ReceiverFor(isolate, receiver, realm));
+    call.state().holderSlot = call.state().thisSlot;
+    call.state().data = function->data;
     if (value != nullptr) {
-        call.state.valueSlot = call.Push(value);
-        call.state.hasValue = true;
+        call.state().valueSlot = call.Push(value);
+        call.state().hasValue = true;
     }
-    Shielded([&] { callback(CallbackInfo(call.state)); });
+    Shielded([&] { callback(CallbackInfo(call.state())); });
     // A stop requested while the native ran - which it may have seen and
     // returned for - is enforced here, on the way back into script. The eval
     // breaker would get there too, but only once the requesting thread has
@@ -657,9 +653,9 @@ class HookCall {
    public:
     HookCall(Isolate& isolate, PyObject* receiver, PyObject* holder, CallbackData data) noexcept
         : call_(isolate, nullptr, 0, CallingRealm(isolate)) {
-        call_.state.thisSlot = call_.Push(Py_NewRef(receiver));
-        call_.state.holderSlot = holder == receiver ? call_.state.thisSlot : call_.Push(Py_NewRef(holder));
-        call_.state.data = data;
+        call_.state().thisSlot = call_.Push(Py_NewRef(receiver));
+        call_.state().holderSlot = holder == receiver ? call_.state().thisSlot : call_.Push(Py_NewRef(holder));
+        call_.state().data = data;
     }
 
     /// A value as a handle in the hook's frame: empty if the frame could not
@@ -672,7 +668,7 @@ class HookCall {
         return Local<T>::FromSlot(SlotOrEmpty(call_.frame(), call_.Push(value)));
     }
 
-    [[nodiscard]] PropertyCallbackInfo Info() const noexcept { return PropertyCallbackInfo(call_.state); }
+    [[nodiscard]] PropertyCallbackInfo Info() const noexcept { return PropertyCallbackInfo(call_.state()); }
     [[nodiscard]] PyObject* Result() noexcept {
         PyObject* result = call_.TakeResult();
         return result != nullptr ? result : Py_NewRef(Py_None);
@@ -1261,6 +1257,7 @@ void Seal(TemplateRec* rec) noexcept {
     if (shape == nullptr) {
         return true;
     }
+    // NOLINTNEXTLINE(modernize-loop-convert): the vector may grow under the loop - see above
     for (std::size_t i = 0; i < shape->entries.size(); ++i) {
         const TemplateEntry& entry = shape->entries[i];
         PyObject* key = nullptr;
@@ -1291,6 +1288,7 @@ void Seal(TemplateRec* rec) noexcept {
 /// have to be a descriptor on the metaclass, shared by every template's type -
 /// and neither is a symbol method with no Python protocol to stand for.
 [[nodiscard]] bool ApplyStatics(Isolate& isolate, ContextRec* realm, PyObject* type, TemplateRec* tpl) noexcept {
+    // NOLINTNEXTLINE(modernize-loop-convert): an index loop, as in ApplyEntries and for its reason
     for (std::size_t i = 0; i < tpl->entries.size(); ++i) {
         const TemplateEntry& entry = tpl->entries[i];
         if (entry.kind == TemplateEntry::Kind::Accessor) {
@@ -1559,11 +1557,11 @@ void DestroyBox(NativeBox* box) noexcept {
         return nullptr;
     }
     NativeCall call(isolate, args, static_cast<std::uint32_t>(argc), realm);
-    call.state.thisSlot = call.Push(ReceiverFor(isolate, receiver, realm));
-    call.state.holderSlot = call.state.thisSlot;
-    call.state.data = tpl->callbackData;
+    call.state().thisSlot = call.Push(ReceiverFor(isolate, receiver, realm));
+    call.state().holderSlot = call.state().thisSlot;
+    call.state().data = tpl->callbackData;
     const FunctionCallback callback = tpl->callback;
-    Shielded([&] { callback(CallbackInfo(call.state)); });
+    Shielded([&] { callback(CallbackInfo(call.state())); });
     // A stop requested while the native ran - which it may have seen and
     // returned for - is enforced here, on the way back into script. The eval
     // breaker would get there too, but only once the requesting thread has
@@ -1629,17 +1627,17 @@ PyObject* ConstructTemplate(Isolate& isolate, PyTypeObject* type, TemplateRec* t
     if (instance == nullptr) {
         return nullptr;
     }
-    PyObject* self = reinterpret_cast<PyObject*>(instance);
+    auto* self = reinterpret_cast<PyObject*>(instance);
 
     if (owner != nullptr) {
         NativeBox* box = nullptr;
         {
             NativeCall call(isolate, args, static_cast<std::uint32_t>(argc), realm);
-            call.state.thisSlot = call.Push(Py_NewRef(self));
-            call.state.holderSlot = call.state.thisSlot;
-            call.state.isConstruct = isConstruct;
+            call.state().thisSlot = call.Push(Py_NewRef(self));
+            call.state().holderSlot = call.state().thisSlot;
+            call.state().isConstruct = isConstruct;
             const NativeConstructor constructor = owner->constructor;
-            Shielded([&] { box = constructor(CallbackInfo(call.state)); });
+            Shielded([&] { box = constructor(CallbackInfo(call.state())); });
         }
         if (box == nullptr || PyErr_Occurred() != nullptr) {
             // A constructor that threw, or declined without saying why - which
@@ -1664,12 +1662,12 @@ PyObject* ConstructTemplate(Isolate& isolate, PyTypeObject* type, TemplateRec* t
         PyObject* answer = nullptr;
         {
             NativeCall call(isolate, args, static_cast<std::uint32_t>(argc), realm);
-            call.state.thisSlot = call.Push(Py_NewRef(self));
-            call.state.holderSlot = call.state.thisSlot;
-            call.state.data = tpl->callbackData;
-            call.state.isConstruct = isConstruct;
+            call.state().thisSlot = call.Push(Py_NewRef(self));
+            call.state().holderSlot = call.state().thisSlot;
+            call.state().data = tpl->callbackData;
+            call.state().isConstruct = isConstruct;
             const FunctionCallback callback = tpl->callback;
-            Shielded([&] { callback(CallbackInfo(call.state)); });
+            Shielded([&] { callback(CallbackInfo(call.state())); });
             answer = call.TakeResult();
         }
         if (PyErr_Occurred() != nullptr) {
@@ -1735,10 +1733,6 @@ std::optional<Slot> CallFunction(const Context& context, Slot function, Slot rec
     PyObject* result = nullptr;
     if (IsNativeFunction(isolate, callable)) {
         result = CallNative(isolate, AsFunction(callable), self, args.data(), args.size());
-    } else if (IsBoundFunction(isolate, callable)) {
-        // Bound is bound: the receiver it carries wins over the one passed, as
-        // for a JavaScript bound function.
-        result = PyObject_Vectorcall(callable, args.data(), args.size(), nullptr);
     } else if (TemplateRec* tpl = PyType_Check(callable) != 0
                                       ? TemplateOfType(isolate, reinterpret_cast<PyTypeObject*>(callable))
                                       : nullptr;
@@ -1748,7 +1742,10 @@ std::optional<Slot> CallFunction(const Context& context, Slot function, Slot rec
         // A Python callable has no receiver to be given: a method is already
         // bound to its own, and a function takes what it is passed. So the
         // receiver is dropped, rather than slipped in as a first argument the
-        // callable did not ask for.
+        // callable did not ask for. A bound native function - which is not a
+        // type, so never the branch above - is the same case: bound is bound,
+        // and the receiver it carries wins over the one passed, as for a
+        // JavaScript bound function.
         result = PyObject_Vectorcall(callable, args.data(), args.size(), nullptr);
     }
     return PushOrNothing(isolate, result);

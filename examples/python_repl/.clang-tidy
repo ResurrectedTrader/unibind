@@ -1,0 +1,10 @@
+# The REPL example's set: the root one, with its own header in the filter.
+InheritParentConfig: true
+
+# The root filter names the library's include roots - include, src, tests,
+# tools - and an example is none of them. The REPL is part of the python tree's
+# build and so of its lint (lint.yml), and `host.h` is where most of what it
+# declares lives: without this line a finding there would be dropped in
+# silence, while the same one in `host.cpp` failed the job. For translation
+# units in this directory only; nothing else includes an example's header.
+HeaderFilterRegex: '.*[/\\]unibind[/\\](include|src|tests|tools|examples)[/\\].*'

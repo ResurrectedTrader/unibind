@@ -6,8 +6,10 @@
 // bytes. Equal bytes mean the same values *and* the same shape - every shared
 // reference and every cycle where it was.
 
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <random>
@@ -241,7 +243,9 @@ TEST_CASE("clone: a TypedArray made in C++ round-trips") {
     const auto clone = py_test::Narrow<ub::TypedArray>(Decode(f.context, blob));
     std::array<double, 3> out{};
     CHECK(ub::CopyElements(clone, std::span<double>(out)) == 3);
-    CHECK(std::memcmp(out.data(), values.data(), sizeof(values)) == 0);
+    // Bit for bit, which is what makes -0.0 a case: it equals 0.0 as a double.
+    const auto bits = [](double d) { return std::bit_cast<std::uint64_t>(d); };
+    CHECK(std::ranges::equal(out, values, {}, bits, bits));
     CHECK_FALSE(clone.StrictEquals(*view));
 }
 
@@ -444,7 +448,7 @@ value['me'] = value
         CHECK(refused(flipped));
     }
     // Random garbage, some of it wearing the right magic.
-    std::mt19937 random(12345);
+    std::mt19937 random(12345);  // NOLINT(cert-msc32-c,cert-msc51-cpp): a failure has to be reproducible
     for (int round = 0; round < 500; ++round) {
         Blob noise(static_cast<std::size_t>(random() % 200));
         for (auto& byte : noise) {

@@ -31,6 +31,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdio>
 #include <deque>
 #include <filesystem>
@@ -81,7 +82,7 @@ void Err(std::format_string<Args...> format, Args&&... args) {
 // Stopping a script from another thread
 // =====================================================================================
 
-enum class StopReason { None, Interrupt, Timeout };
+enum class StopReason : std::uint8_t { None, Interrupt, Timeout };
 
 /// What the other threads - the console's Ctrl-C handler and the watchdog -
 /// know about the main thread: whether it is running Python right now, and
@@ -94,6 +95,12 @@ enum class StopReason { None, Interrupt, Timeout };
 /// arrive for the run that just ended.
 class Supervisor {
    public:
+    Supervisor() = default;
+    Supervisor(const Supervisor&) = delete;
+    Supervisor& operator=(const Supervisor&) = delete;
+    Supervisor(Supervisor&&) = delete;
+    Supervisor& operator=(Supervisor&&) = delete;
+
     void Attach(ub::Isolate* isolate) {
         const std::scoped_lock lock(mutex_);
         isolate_ = isolate;
@@ -243,7 +250,7 @@ BOOL WINAPI OnConsoleControl(DWORD event) {
 
 /// One line of input, or the reason there is none.
 struct InputEvent {
-    enum class Kind { Line, Interrupt, Eof };
+    enum class Kind : std::uint8_t { Line, Interrupt, Eof };
     Kind kind = Kind::Eof;
     std::string text;
 };
@@ -306,7 +313,7 @@ class LineReader {
         wchar_t buffer[512];
         while (true) {
             DWORD read = 0;
-            if (!ReadConsoleW(GetStdHandle(STD_INPUT_HANDLE), buffer, 512, &read, nullptr)) {
+            if (ReadConsoleW(GetStdHandle(STD_INPUT_HANDLE), buffer, 512, &read, nullptr) == FALSE) {
                 return {.kind = GetLastError() == ERROR_OPERATION_ABORTED ? InputEvent::Kind::Interrupt
                                                                           : InputEvent::Kind::Eof,
                         .text = {}};
@@ -418,7 +425,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 /// How one input ended.
 struct Outcome {
-    enum class Kind { Ok, Threw, Stopped, Exit };
+    enum class Kind : std::uint8_t { Ok, Threw, Stopped, Exit };
     Kind kind = Kind::Ok;
     int exitCode = 0;
 };
@@ -426,13 +433,13 @@ struct Outcome {
 class Session {
    public:
     Session(ub::Isolate& isolate, ub::Context user, ub::Context tools, repl::Host& host)
-        : isolate_(isolate), user_(std::move(user)), tools_(std::move(tools)), host_(host) {}
+        : isolate_(&isolate), user_(std::move(user)), tools_(std::move(tools)), host_(&host) {}
 
     /// Runs `TOOLS_SOURCE` in the tools realm and keeps what it defined.
     bool Init() {
-        const ub::HandleScope scope(isolate_);
+        const ub::HandleScope scope(*isolate_);
         const ub::ContextScope entered(tools_);
-        ub::TryCatch caught(isolate_);
+        ub::TryCatch caught(*isolate_);
         if (!ub::Evaluate(tools_, TOOLS_SOURCE, {.resourceName = "<repl tools>"})) {
             Err("the REPL's helpers failed: {}\n", caught.Message(tools_).value_or("?"));
             return false;
@@ -441,7 +448,7 @@ class Session {
             const auto value = tools_.GlobalObject().Get(tools_, name);
             const auto asFunction = value ? value->To<ub::Function>() : std::nullopt;
             if (asFunction) {
-                into = ub::Global<ub::Function>(isolate_, *asFunction);
+                into = ub::Global<ub::Function>(*isolate_, *asFunction);
             }
             return asFunction.has_value();
         };
@@ -451,15 +458,15 @@ class Session {
         if (!reprFunction) {
             return false;
         }
-        repr_ = ub::Global<ub::Function>(isolate_, *reprFunction);
+        repr_ = ub::Global<ub::Function>(*isolate_, *reprFunction);
         return function("is_complete", isComplete_) && function("exit_code", exitCode_) &&
                function("set_argv", setArgv_) && function("flush", flush_);
     }
 
     /// Is `source` a whole statement, or does the prompt say `... ` next?
     [[nodiscard]] bool IsComplete(std::string_view source) {
-        const ub::HandleScope scope(isolate_);
-        const auto text = ub::String::NewFromUtf8(isolate_, source);
+        const ub::HandleScope scope(*isolate_);
+        const auto text = ub::String::NewFromUtf8(*isolate_, source);
         if (!text) {
             return true;
         }
@@ -468,14 +475,14 @@ class Session {
     }
 
     void SetArgv(std::span<const std::string> argv) {
-        const ub::HandleScope scope(isolate_);
+        const ub::HandleScope scope(*isolate_);
         const ub::ContextScope entered(tools_);
         const auto list = ub::Array::New(tools_, 0);
         if (!list) {
             return;
         }
         for (std::uint32_t i = 0; i < argv.size(); ++i) {
-            const auto item = ub::String::NewFromUtf8(isolate_, argv[i]);
+            const auto item = ub::String::NewFromUtf8(*isolate_, argv[i]);
             if (!item || !list->Set(tools_, i, *item).value_or(false)) {
                 return;
             }
@@ -488,9 +495,9 @@ class Session {
     Outcome Execute(std::string_view source, std::string_view name, bool interactive) {
         Outcome outcome;
         {
-            const ub::HandleScope scope(isolate_);
+            const ub::HandleScope scope(*isolate_);
             const ub::ContextScope entered(user_);
-            ub::TryCatch caught(isolate_);
+            ub::TryCatch caught(*isolate_);
             std::optional<ub::Local<ub::Value>> result;
             StopReason stopped = StopReason::None;
             {
@@ -528,10 +535,10 @@ class Session {
         StopReason stopped = StopReason::None;
         {
             Running running;
-            isolate_.PumpJobs();
+            isolate_->PumpJobs();
             stopped = running.End();
         }
-        if (stopped != StopReason::None || isolate_.IsExecutionTerminating()) {
+        if (stopped != StopReason::None || isolate_->IsExecutionTerminating()) {
             ReportStop(stopped);
         }
         Recover();
@@ -541,24 +548,27 @@ class Session {
     void PumpFor(double seconds) {
         const auto until =
             Clock::now() + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(seconds));
-        do {
+        while (true) {
             Pump();
             if (gSupervisor.TakeIdleInterrupt()) {
                 Out("KeyboardInterrupt\n");
                 return;
             }
             std::this_thread::sleep_for(5ms);
-        } while (Clock::now() < until);
+            if (Clock::now() >= until) {
+                break;
+            }
+        }
         Pump();
     }
 
     /// Until the host has no timer or promise left to settle - what a script
     /// run waits for before the program exits, as Node waits for its loop.
     bool Drain() {
-        while (host_.Outstanding() > 0) {
+        while (host_->Outstanding() > 0) {
             Pump();
             if (gSupervisor.TakeIdleInterrupt()) {
-                Err("KeyboardInterrupt: {} timer(s)/promise(s) still pending\n", host_.Outstanding());
+                Err("KeyboardInterrupt: {} timer(s)/promise(s) still pending\n", host_->Outstanding());
                 return false;
             }
             std::this_thread::sleep_for(5ms);
@@ -567,7 +577,7 @@ class Session {
     }
 
     void PrintHeap() {
-        const ub::HeapStatistics stats = isolate_.GetHeapStatistics();
+        const ub::HeapStatistics stats = isolate_->GetHeapStatistics();
         const auto optional = [](std::optional<std::uint64_t> value) {
             return value ? std::format("{}", *value) : std::string("n/a");
         };
@@ -577,13 +587,13 @@ class Session {
     }
 
     void Collect() {
-        const std::uint64_t before = isolate_.GetHeapStatistics().usedBytes;
-        isolate_.RequestGarbageCollection();
-        const std::uint64_t after = isolate_.GetHeapStatistics().usedBytes;
+        const std::uint64_t before = isolate_->GetHeapStatistics().usedBytes;
+        isolate_->RequestGarbageCollection();
+        const std::uint64_t after = isolate_->GetHeapStatistics().usedBytes;
         Out("collected: {} B -> {} B in use\n", before, after);
     }
 
-    repl::Host& GetHost() { return host_; }
+    repl::Host& GetHost() { return *host_; }
 
    private:
     /// Brackets everything that runs Python, so a stop from another thread
@@ -613,8 +623,8 @@ class Session {
     /// A stop stays in force until it is cancelled, whatever caused it - and
     /// it is cancelled here, back at the top with no native frame left.
     void Recover() {
-        if (isolate_.IsExecutionTerminating()) {
-            isolate_.CancelTerminateExecution();
+        if (isolate_->IsExecutionTerminating()) {
+            isolate_->CancelTerminateExecution();
         }
     }
 
@@ -627,10 +637,10 @@ class Session {
         while (true) {
             {
                 Running running;
-                isolate_.PumpJobs();
+                isolate_->PumpJobs();
                 stopped = running.End();
             }
-            if (stopped != StopReason::None || isolate_.IsExecutionTerminating()) {
+            if (stopped != StopReason::None || isolate_->IsExecutionTerminating()) {
                 return std::nullopt;
             }
             if (ub::GetState(promise) != ub::PromiseState::Pending) {
@@ -642,7 +652,7 @@ class Session {
             }
             if (gSupervisor.TakeIdleInterrupt()) {
                 Out("KeyboardInterrupt (the promise is still pending; it settles at a later pump)\n");
-                return ub::Undefined(isolate_);
+                return ub::Undefined(*isolate_);
             }
             std::this_thread::sleep_for(5ms);
         }
@@ -706,13 +716,13 @@ class Session {
     template <class T>
     std::optional<ub::Local<ub::Value>> CallTool(const ub::Global<ub::Function>& tool, const ub::Local<T>& argument) {
         const ub::ContextScope entered(tools_);
-        ub::TryCatch caught(isolate_);
+        ub::TryCatch caught(*isolate_);
         const std::array<ub::Local<ub::Value>, 1> arguments{argument};
         std::optional<ub::Local<ub::Value>> result;
         StopReason stopped = StopReason::None;
         {
             Running running;
-            result = tool.Get(isolate_).Call(tools_, ub::Undefined(isolate_), arguments);
+            result = tool.Get(*isolate_).Call(tools_, ub::Undefined(*isolate_), arguments);
             stopped = running.End();
         }
         if (!result) {
@@ -722,16 +732,16 @@ class Session {
     }
 
     void Flush() {
-        const ub::HandleScope scope(isolate_);
-        (void)CallTool(flush_, ub::Undefined(isolate_));
+        const ub::HandleScope scope(*isolate_);
+        (void)CallTool(flush_, ub::Undefined(*isolate_));
         std::fflush(stdout);
         std::fflush(stderr);
     }
 
-    ub::Isolate& isolate_;
+    ub::Isolate* isolate_;
     ub::Context user_;
     ub::Context tools_;
-    repl::Host& host_;
+    repl::Host* host_;
     ub::Global<ub::Function> repr_;
     ub::Global<ub::Function> isComplete_;
     ub::Global<ub::Function> exitCode_;
@@ -946,7 +956,7 @@ Exits 0 on success, 1 if the script raised or was stopped, or the SystemExit cod
 )";
 
 struct Options {
-    enum class Mode { Repl, File, Code, Demo, Help };
+    enum class Mode : std::uint8_t { Repl, File, Code, Demo, Help };
     Mode mode = Mode::Repl;
     std::optional<double> timeout;
     std::string code;               ///< -c

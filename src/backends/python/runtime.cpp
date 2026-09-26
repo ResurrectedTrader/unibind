@@ -43,6 +43,7 @@
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wreserved-identifier"
 #endif
+// NOLINTNEXTLINE(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp): CPython's name, not ours to choose
 extern "C" int _PyEval_AddPendingCall(PyInterpreterState* interp, int (*func)(void*), void* arg, int flags);
 #if defined(__clang__)
 #pragma clang diagnostic pop
@@ -243,7 +244,7 @@ void* HookCalloc(void* ctx, std::size_t count, std::size_t elsize) {
     if (elsize != 0 && count > MAX_REQUEST / elsize) {
         return nullptr;
     }
-    const std::size_t bytes = count * elsize + HEADER;
+    const std::size_t bytes = (count * elsize) + HEADER;
     HeapAccount* owner = tAccount;
     if (owner != nullptr && !Admit(*owner, bytes)) {
         return nullptr;
@@ -1102,7 +1103,8 @@ constexpr std::size_t CPYTHON_STACK_MARGIN = std::size_t{2048} * sizeof(void*);
 /// and 64 KB past them for whatever a native does on the way out. A thread's
 /// stack ends in a guard page and, past it, the process; this is the room
 /// before that. 128 KB in a release build, 192 KB in a debug one.
-constexpr std::size_t STACK_HEADROOM = std::max<std::size_t>(128 * 1024, 2 * CPYTHON_STACK_MARGIN + 64 * 1024);
+constexpr std::size_t STACK_HEADROOM =
+    std::max<std::size_t>(std::size_t{128} * 1024, (2 * CPYTHON_STACK_MARGIN) + (std::size_t{64} * 1024));
 
 /// Native recursion - a callback calling back into the engine, through Python
 /// or not - is held at the same floor by every native entry: each asks
@@ -1237,8 +1239,11 @@ bool IsolateRuntimeSetup(Isolate& isolate, const IsolateOptions& options) noexce
     // margins; the top is only what CPython reports "used" against, so a
     // region that would be smaller - a small stackLimitBytes near the top of
     // a fresh thread - is reported as three margins.
-    const std::uintptr_t base = runtime->stackFloor - 2 * CPYTHON_STACK_MARGIN;
+    const std::uintptr_t base = runtime->stackFloor - (2 * CPYTHON_STACK_MARGIN);
     const std::size_t region = std::max<std::size_t>(high - base, 3 * CPYTHON_STACK_MARGIN);
+    // The floor is arithmetic on a stack address, and CPython takes the base
+    // back as a pointer: an integer-to-pointer cast is what this is.
+    // NOLINTNEXTLINE(performance-no-int-to-ptr)
     return PyUnstable_ThreadState_SetStackProtection(isolate.impl().tstate, reinterpret_cast<void*>(base), region) == 0;
 }
 
@@ -1481,7 +1486,7 @@ std::optional<bool> SettleFromEmbedder(const Context& context, Slot promise, Slo
         // a future refuses it, because a coroutine cannot raise it.
         PyObject* reason = Resolve(value);
         PyObject* error = nullptr;
-        if (PyExceptionInstance_Check(reason) && !PyErr_GivenExceptionMatches(reason, PyExc_StopIteration)) {
+        if (PyExceptionInstance_Check(reason) && PyErr_GivenExceptionMatches(reason, PyExc_StopIteration) == 0) {
             error = Py_NewRef(reason);
         } else {
             error = PyObject_CallOneArg(isolate.impl().types.thrown, reason);
@@ -1575,6 +1580,9 @@ HeapStatistics Isolate::GetHeapStatistics() const noexcept {
     return stats;
 }
 
+// A member because the API is one; CPython collects the interpreter whose
+// thread state is attached, which is this isolate's (decision 11).
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static)
 void Isolate::RequestGarbageCollection() noexcept {
     // Keep whatever is pending: a collection is not a call and must not eat
     // an exception the embedder has not looked at yet.

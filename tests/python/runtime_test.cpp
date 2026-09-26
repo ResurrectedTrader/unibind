@@ -364,7 +364,7 @@ struct Tagged {
 };
 
 void NoteTagged(ub::Isolate& /*isolate*/, ub::CallbackData data) {
-    Tagged* tag = data.As<Tagged>();
+    auto* tag = data.As<Tagged>();
     tag->log->Note(tag->id);
 }
 
@@ -493,16 +493,17 @@ TEST_CASE("interrupts: many requested from many threads while a script runs all 
     constexpr int THREADS = 4;
     constexpr int EACH = 50;
     std::vector<Tagged> tags;
-    tags.reserve(THREADS * EACH);
+    tags.reserve(static_cast<std::size_t>(THREADS) * EACH);
     for (int i = 0; i < THREADS * EACH; ++i) {
         tags.push_back({&log, i});
     }
     std::atomic<int> done{0};
     std::vector<std::thread> threads;
+    threads.reserve(THREADS);
     for (int t = 0; t < THREADS; ++t) {
         threads.emplace_back([&, t] {
             for (int i = 0; i < EACH; ++i) {
-                CHECK(f.iso().RequestInterrupt(&NoteTagged, ub::CallbackData::For(tags[t * EACH + i])));
+                CHECK(f.iso().RequestInterrupt(&NoteTagged, ub::CallbackData::For(tags[(t * EACH) + i])));
                 if (i % 10 == 0) {
                     std::this_thread::sleep_for(1ms);
                 }
@@ -747,17 +748,18 @@ TEST_CASE("jobs: work posted from other threads while the isolate pumps runs onc
     constexpr int THREADS = 4;
     constexpr int EACH = 200;
     std::vector<Job> jobs;
-    jobs.reserve(THREADS * EACH);
+    jobs.reserve(static_cast<std::size_t>(THREADS) * EACH);
     for (int i = 0; i < THREADS * EACH; ++i) {
         jobs.push_back({&log, i});
     }
     std::atomic<int> done{0};
     std::vector<std::thread> threads;
+    threads.reserve(THREADS);
     for (int t = 0; t < THREADS; ++t) {
         threads.emplace_back([&, t] {
             for (int i = 0; i < EACH; ++i) {
                 const bool delayed = i % 7 == 0;
-                auto& job = jobs[t * EACH + i];
+                auto& job = jobs[(t * EACH) + i];
                 CHECK((delayed ? f.iso().PostDelayedJob(&RunJob, ub::CallbackData::For(job), 0.001)
                                : f.iso().PostJob(&RunJob, ub::CallbackData::For(job))));
             }
@@ -774,7 +776,7 @@ TEST_CASE("jobs: work posted from other threads while the isolate pumps runs onc
     f.iso().PumpJobs();
     const std::vector<int> order = log.Order();
     REQUIRE(order.size() == static_cast<std::size_t>(THREADS * EACH));
-    std::vector<int> seen(THREADS * EACH, 0);
+    std::vector<int> seen(static_cast<std::size_t>(THREADS) * EACH, 0);
     for (const int id : order) {
         ++seen[id];
     }
@@ -808,7 +810,7 @@ TEST_CASE("heap: the statistics are sane and follow what the script allocates") 
 
     CHECK(Eval(f.context, "big = bytearray(16 * 1024 * 1024)").IsUndefined());
     const ub::HeapStatistics grown = f.iso().GetHeapStatistics();
-    CHECK(grown.usedBytes >= before.usedBytes + 16 * 1024 * 1024);
+    CHECK(grown.usedBytes >= before.usedBytes + (std::uint64_t{16} * 1024 * 1024));
     CHECK(grown.totalBytes >= grown.usedBytes);
     CHECK(grown.limitBytes >= grown.usedBytes);
     CHECK(*grown.peakMallocedBytes >= grown.usedBytes);
@@ -816,18 +818,18 @@ TEST_CASE("heap: the statistics are sane and follow what the script allocates") 
     CHECK(Eval(f.context, "del big").IsUndefined());
     f.iso().RequestGarbageCollection();
     const ub::HeapStatistics shrunk = f.iso().GetHeapStatistics();
-    CHECK(shrunk.usedBytes + 15 * 1024 * 1024 < grown.usedBytes);
+    CHECK(shrunk.usedBytes + (std::uint64_t{15} * 1024 * 1024) < grown.usedBytes);
     CHECK(*shrunk.peakMallocedBytes >= grown.usedBytes);
 }
 
 TEST_CASE("heap: a limit is reported as the limit") {
-    auto isolate = ub::Isolate::New({.heapLimitBytes = 96 * 1024 * 1024});
+    auto isolate = ub::Isolate::New({.heapLimitBytes = std::size_t{96} * 1024 * 1024});
     REQUIRE(isolate != nullptr);
     CHECK(isolate->GetHeapStatistics().limitBytes == 96 * 1024 * 1024);
 }
 
 TEST_CASE("heap: a script that reaches the limit gets a MemoryError it can catch, and a fault is reported") {
-    auto isolate = ub::Isolate::New({.heapLimitBytes = 64 * 1024 * 1024});
+    auto isolate = ub::Isolate::New({.heapLimitBytes = std::size_t{64} * 1024 * 1024});
     REQUIRE(isolate != nullptr);
     const ub::HandleScope scope(*isolate);
     auto context = ub::Context::New(*isolate);
@@ -880,7 +882,7 @@ std::size_t RescueOnce(ub::Isolate& isolate, std::size_t current, std::size_t in
 }  // namespace
 
 TEST_CASE("heap: the limit callback raises the ceiling and stops the script - the rescue") {
-    auto isolate = ub::Isolate::New({.heapLimitBytes = 48 * 1024 * 1024});
+    auto isolate = ub::Isolate::New({.heapLimitBytes = std::size_t{48} * 1024 * 1024});
     REQUIRE(isolate != nullptr);
     const ub::HandleScope scope(*isolate);
     auto context = ub::Context::New(*isolate);
@@ -912,7 +914,7 @@ while True:
 }
 
 TEST_CASE("heap: a callback that declines is asked once per crossing, and the script gets MemoryError") {
-    auto isolate = ub::Isolate::New({.heapLimitBytes = 48 * 1024 * 1024});
+    auto isolate = ub::Isolate::New({.heapLimitBytes = std::size_t{48} * 1024 * 1024});
     REQUIRE(isolate != nullptr);
     const ub::HandleScope scope(*isolate);
     auto context = ub::Context::New(*isolate);
@@ -965,7 +967,7 @@ again
 
 TEST_CASE("heap: a limit belongs to its isolate, not to the thread's next one or to the process") {
     {
-        auto limited = ub::Isolate::New({.heapLimitBytes = 32 * 1024 * 1024});
+        auto limited = ub::Isolate::New({.heapLimitBytes = std::size_t{32} * 1024 * 1024});
         REQUIRE(limited != nullptr);
     }
     // Same thread, no limit now.
@@ -974,7 +976,7 @@ TEST_CASE("heap: a limit belongs to its isolate, not to the thread's next one or
 
     // And a limited isolate on another thread does not limit this one.
     std::thread other([] {
-        auto limited = ub::Isolate::New({.heapLimitBytes = 32 * 1024 * 1024});
+        auto limited = ub::Isolate::New({.heapLimitBytes = std::size_t{32} * 1024 * 1024});
         REQUIRE(limited != nullptr);
         const ub::HandleScope scope(*limited);
         auto context = ub::Context::New(*limited);
@@ -1119,7 +1121,7 @@ TEST_CASE("stack: a smaller stackLimitBytes stops native recursion sooner") {
 #else
     constexpr std::size_t TIGHT = std::size_t{1024} * 1024;
 #endif
-    OnThreadWithStack(4 * 1024 * 1024, [&] {
+    OnThreadWithStack(std::size_t{4} * 1024 * 1024, [&] {
         roomy = DepthReached({});
         tight = DepthReached({.stackLimitBytes = TIGHT});
     });
@@ -1149,6 +1151,7 @@ TEST_CASE("concurrency: isolates on several threads stop, interrupt, pump and al
     constexpr int THREADS = 6;
     std::vector<std::thread> threads;
     std::atomic<int> failures{0};
+    threads.reserve(THREADS);
     for (int t = 0; t < THREADS; ++t) {
         threads.emplace_back([t, &failures] {
             auto isolate = ub::Isolate::New({.heapLimitBytes = (t % 2 == 0) ? std::size_t{128} * 1024 * 1024 : 0});
@@ -1212,6 +1215,7 @@ TEST_CASE("concurrency: isolates on different threads run Python in parallel") {
         std::atomic<bool> go{false};
         std::vector<std::chrono::steady_clock::duration> took(THREADS);
         std::vector<std::thread> threads;
+        threads.reserve(THREADS);
         for (int i = 0; i < THREADS; ++i) {
             threads.emplace_back([&, i] {
                 Fixture f;
@@ -1232,7 +1236,7 @@ TEST_CASE("concurrency: isolates on different threads run Python in parallel") {
         for (std::thread& thread : threads) {
             thread.join();
         }
-        return *std::max_element(took.begin(), took.end());
+        return *std::ranges::max_element(took);
     };
     double best = 1e9;
     for (int attempt = 0; attempt < 3 && best >= 2.5; ++attempt) {
@@ -1350,6 +1354,7 @@ struct Cost {
         churn(count);
     } else {
         std::vector<std::thread> workers;
+        workers.reserve(static_cast<std::size_t>(threads));
         for (int t = 0; t < threads; ++t) {
             workers.emplace_back([&] { churn(count / threads); });
         }

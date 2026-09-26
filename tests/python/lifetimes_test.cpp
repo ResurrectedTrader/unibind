@@ -375,6 +375,7 @@ TEST_CASE("lifetimes: script that empties its own globals does not take the real
                 Expose(*context, "readsMarker", Native(*context, &ReadsMarker));
                 CHECK(EvalText(*context, "readsMarker()") == "still here");
                 // A copy the scope still holds, and one more round of wiping.
+                // NOLINTNEXTLINE(performance-unnecessary-copy-initialization): the copy is the case
                 ub::Context copy = *context;
                 (void)ub::Evaluate(copy, wipe);
                 CHECK(EvalInt(copy, "1 + 1") == 2);
@@ -476,7 +477,7 @@ TEST_CASE("lifetimes: Context copies, moves and assignments count their referenc
         CHECK(EvalInt(d, "7 * 6") == 42);
         Run(e, "shared = 'yes'");
         CHECK(EvalText(a, "shared") == "yes");
-        c.Reset();
+        c.Reset();  // NOLINT(bugprone-use-after-move): resetting a moved-from one is specified
         c.Reset();
     }
     Run(f.context, "gc.collect()");
@@ -539,7 +540,7 @@ TEST_CASE("lifetimes: ten thousand realms made and dropped leave the C++ heap wh
     const auto heapAfter = f.iso().GetHeapStatistics().usedBytes;
     CAPTURE(heapBefore);
     CAPTURE(heapAfter);
-    CHECK(heapAfter < heapBefore + 2 * 1024 * 1024);
+    CHECK(heapAfter < heapBefore + (std::uint64_t{2} * 1024 * 1024));
 }
 
 namespace {
@@ -631,7 +632,7 @@ namespace {
 /// Asks for an ArrayBuffer no machine can hold; answers whether it was refused
 /// the way the header says - empty, with nothing thrown.
 void MakesHugeBuffer(const ub::CallbackInfo& info) {
-    const auto huge = ub::ArrayBuffer::New(info.GetContext(), std::numeric_limits<std::size_t>::max() / 2 - 64);
+    const auto huge = ub::ArrayBuffer::New(info.GetContext(), (std::numeric_limits<std::size_t>::max() / 2) - 64);
     info.GetReturnValue().Set(!huge.has_value() && !info.GetIsolate().HasPendingException());
 }
 }  // namespace

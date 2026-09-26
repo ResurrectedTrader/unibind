@@ -20,10 +20,10 @@ int Rounds(int fallback) {
     char* text = nullptr;
     std::size_t length = 0;
     if (_dupenv_s(&text, &length, "UNIBIND_CONCURRENCY_ROUNDS") == 0 && text != nullptr) {
-        const int rounds = std::atoi(text);
+        const long rounds = std::strtol(text, nullptr, 10);
         std::free(text);
         if (rounds > 0) {
-            return rounds;
+            return static_cast<int>(rounds);
         }
     }
     return fallback;

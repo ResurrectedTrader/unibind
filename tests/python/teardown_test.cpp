@@ -44,12 +44,13 @@ namespace {
 /// or a fatal error's last words.
 class CaptureStderr {
    public:
-    CaptureStderr() {
+    // The descriptor is duplicated before anything is flushed; that changes
+    // nothing, since stderr is only redirected below, after the flush.
+    CaptureStderr() : saved_(_dup(2)) {
         std::fflush(stderr);
         path_ = (std::filesystem::temp_directory_path() /
                  ("unibind-stderr-" + std::to_string(reinterpret_cast<std::uintptr_t>(this)) + ".txt"))
                     .string();
-        saved_ = _dup(2);
         int file = -1;
         REQUIRE(_sopen_s(&file, path_.c_str(), _O_CREAT | _O_TRUNC | _O_WRONLY | _O_BINARY, _SH_DENYNO,
                          _S_IREAD | _S_IWRITE) == 0);
@@ -194,7 +195,7 @@ std::int64_t UseEverything(int seed) {
         ub::Global<ub::Value> root(*isolate, Eval(*context, "import gc, asyncio, unibind\nobject()"));
         sum += EvalInt(*context, "keep = [Counted() for _ in range(10)]\nsum(c.ping() for c in keep)");
         sum += EvalInt(*context, "Shape().sides");
-        sum += EvalInt(*context, "t = unibind.TypedArray('int32', range(" + std::to_string(seed % 7 + 1) +
+        sum += EvalInt(*context, "t = unibind.TypedArray('int32', range(" + std::to_string((seed % 7) + 1) +
                                      "))\nm = memoryview(t)\nsum(m)");
         sum += EvalInt(*context, "a = []\na.append(a)\nx = Counted()\nx.a = a\na.append(x)\ndel a, x\ngc.collect()\n0");
         const auto promise = ub::Promise::New(*context);
@@ -237,8 +238,8 @@ constexpr int CONCURRENT_THREADS = 8;
 
 /// What `UseEverything(seed)` answers when every part of it worked.
 std::int64_t ExpectedSum(int seed) {
-    const std::int64_t n = seed % 7 + 1;  // the typed array holds 0 .. n - 1
-    return 10 + 4 + n * (n - 1) / 2 + 0 + seed + 30 + 5;
+    const std::int64_t n = (seed % 7) + 1;  // the typed array holds 0 .. n - 1
+    return 10 + 4 + (n * (n - 1) / 2) + 0 + seed + 30 + 5;
 }
 
 }  // namespace
@@ -270,10 +271,11 @@ TEST_CASE("teardown: isolates on many threads at once, each churning, share noth
     Counted::Reset();
     std::atomic<int> failures{0};
     std::vector<std::thread> threads;
+    threads.reserve(CONCURRENT_THREADS);
     for (int t = 0; t < CONCURRENT_THREADS; ++t) {
         threads.emplace_back([t, &failures] {
             for (int round = 0; round < ROUNDS_PER_THREAD; ++round) {
-                const int seed = t * 10 + round;
+                const int seed = (t * 10) + round;
                 if (UseEverything(seed) != ExpectedSum(seed)) {
                     ++failures;
                 }
@@ -341,7 +343,7 @@ TEST_CASE("teardown: one isolate churning realms, scripts, templates, roots and 
     CAPTURE(heapBefore);
     CAPTURE(heapAfter);
     CHECK(kept <= 16);
-    CHECK(heapAfter < heapBefore + 4 * 1024 * 1024);
+    CHECK(heapAfter < heapBefore + (std::uint64_t{4} * 1024 * 1024));
     CHECK(Counted::alive == 0);
 }
 
@@ -523,7 +525,7 @@ void StopsWhileHolding(const ub::CallbackInfo& info) {
     info.GetIsolate().TerminateExecution();
     for (int i = 0; i < 30; ++i) {
         if (auto made = ub::Object::New(info.GetContext())) {
-            held.push_back(*made);
+            held.emplace_back(*made);
         }
     }
     info.GetReturnValue().Set(held.front());

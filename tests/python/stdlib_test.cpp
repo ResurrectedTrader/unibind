@@ -185,13 +185,14 @@ TEST_CASE("stdlib: ssl - default contexts made in isolates on many threads at on
     constexpr int THREADS = 8;
     constexpr int ROUNDS = 3;
     std::latch start(THREADS);
-    std::vector<std::string> results(THREADS * ROUNDS);
+    std::vector<std::string> results(static_cast<std::size_t>(THREADS) * ROUNDS);
     std::vector<std::thread> threads;
+    threads.reserve(THREADS);
     for (int t = 0; t < THREADS; ++t) {
         threads.emplace_back([t, &results, &start] {
             start.arrive_and_wait();
             for (int round = 0; round < ROUNDS; ++round) {
-                results[t * ROUNDS + round] = EvalInFreshIsolate(R"(
+                results[(t * ROUNDS) + round] = EvalInFreshIsolate(R"(
 import ssl
 contexts = [ssl.create_default_context() for _ in range(5)]
 stores = [ssl.enum_certificates('ROOT') for _ in range(5)]

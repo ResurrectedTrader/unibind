@@ -126,7 +126,7 @@ constexpr std::uint64_t MAX_DENSE_LENGTH = std::uint64_t{1} << 26;
 [[nodiscard]] bool SetAttributes(ObjectInstance* object, PyObject* key, long attributes) noexcept {
     if (attributes == 0) {
         if (object->meta != nullptr && PyDict_DelItem(object->meta, key) != 0) {
-            if (!PyErr_ExceptionMatches(PyExc_KeyError)) {
+            if (PyErr_ExceptionMatches(PyExc_KeyError) == 0) {
                 return false;
             }
             PyErr_Clear();
@@ -260,7 +260,7 @@ enum class Outcome : std::uint8_t {
 [[nodiscard]] Outcome SetChain(Isolate& isolate, ObjectInstance* receiver, PyObject* key, PyObject* value, bool hooks,
                                bool* getterOnly) noexcept {
     *getterOnly = false;
-    PyObject* self = reinterpret_cast<PyObject*>(receiver);
+    auto* self = reinterpret_cast<PyObject*>(receiver);
     if (hooks) {
         if (TemplateRec* shape = ShapeOf(receiver); shape != nullptr && HasHandlerFor(shape, key)) {
             switch (InterceptSet(isolate, shape, key, value, self)) {
@@ -640,7 +640,7 @@ enum class Outcome : std::uint8_t {
         PyErr_Clear();
         return nullptr;
     }
-    if (!PyMapping_Check(dict)) {
+    if (PyMapping_Check(dict) == 0) {
         Py_DECREF(dict);
         return nullptr;
     }
@@ -830,26 +830,27 @@ enum class Outcome : std::uint8_t {
 class ApiOp {
    public:
     explicit ApiOp(const Context& context) noexcept
-        : isolate(OwnerOf(context)), gate_(isolate), realm_(isolate, context.rec()) {}
+        : isolate_(&OwnerOf(context)), gate_(*isolate_), realm_(*isolate_, context.rec()) {}
+
+    [[nodiscard]] Isolate& isolate() const noexcept { return *isolate_; }
 
     [[nodiscard]] bool Open() const noexcept { return gate_.Open(); }
 
     /// `NormalizeKey` of a slot. New reference or null (thrown).
-    [[nodiscard]] PyObject* Key(Slot key) const noexcept { return NormalizeKey(isolate, Resolve(key)); }
+    [[nodiscard]] PyObject* Key(Slot key) const noexcept { return NormalizeKey(*isolate_, Resolve(key)); }
     [[nodiscard]] PyObject* Index(std::uint32_t index) const noexcept {
         PyObject* raw = PyLong_FromUnsignedLong(index);
         if (raw == nullptr) {
             return nullptr;
         }
         // 2^32 - 1 is not an array index, and becomes the string it spells.
-        PyObject* key = NormalizeKey(isolate, raw);
+        PyObject* key = NormalizeKey(*isolate_, raw);
         Py_DECREF(raw);
         return key;
     }
 
-    Isolate& isolate;
-
    private:
+    Isolate* isolate_;
     ScriptGate gate_;
     RealmScope realm_;
 };
@@ -1259,7 +1260,13 @@ PyObject* ObjectRepr(PyObject* self) {
                 const CallbackRecord* record = RecordOf(value);
                 const bool get = record != nullptr && record->getter != nullptr;
                 const bool set = record != nullptr && record->setter != nullptr;
-                shown = PyUnicode_FromString(get && set ? "[Getter/Setter]" : get ? "[Getter]" : "[Setter]");
+                const char* label = "[Setter]";
+                if (get && set) {
+                    label = "[Getter/Setter]";
+                } else if (get) {
+                    label = "[Getter]";
+                }
+                shown = PyUnicode_FromString(label);
             } else {
                 shown = PyObject_Repr(value);
             }
@@ -1430,7 +1437,7 @@ int ObjectInit(PyObject* self, PyObject* args, PyObject* kwds) {
     Py_ssize_t position = 0;
     PyObject* rawKey = nullptr;
     PyObject* value = nullptr;
-    while (status == 0 && PyDict_Next(items, &position, &rawKey, &value)) {
+    while (status == 0 && PyDict_Next(items, &position, &rawKey, &value) != 0) {
         status = StoreOrDelete(self, rawKey, value, PyExc_KeyError);
     }
     Py_DECREF(items);
@@ -1625,9 +1632,9 @@ std::optional<Slot> GetProperty(const Context& context, Slot object, Slot key) {
         return std::nullopt;
     }
     bool found = false;
-    PyObject* value = GetAny(op.isolate, Resolve(object), normalized, &found);
+    PyObject* value = GetAny(op.isolate(), Resolve(object), normalized, &found);
     Py_DECREF(normalized);
-    return PushOrNothing(op.isolate, value);
+    return PushOrNothing(op.isolate(), value);
 }
 
 std::optional<Slot> GetIndex(const Context& context, Slot object, std::uint32_t index) {
@@ -1640,9 +1647,9 @@ std::optional<Slot> GetIndex(const Context& context, Slot object, std::uint32_t 
         return std::nullopt;
     }
     bool found = false;
-    PyObject* value = GetAny(op.isolate, Resolve(object), key, &found);
+    PyObject* value = GetAny(op.isolate(), Resolve(object), key, &found);
     Py_DECREF(key);
-    return PushOrNothing(op.isolate, value);
+    return PushOrNothing(op.isolate(), value);
 }
 
 namespace {
@@ -1676,9 +1683,9 @@ std::optional<bool> SetProperty(const Context& context, Slot object, Slot key, S
         return std::nullopt;
     }
     PyObject* target = Resolve(object);
-    const Outcome outcome = SetAny(op.isolate, target, normalized, Resolve(value));
+    const Outcome outcome = SetAny(op.isolate(), target, normalized, Resolve(value));
     Py_DECREF(normalized);
-    return SetAnswer(op.isolate, target, outcome);
+    return SetAnswer(op.isolate(), target, outcome);
 }
 
 std::optional<bool> SetIndex(const Context& context, Slot object, std::uint32_t index, Slot value) {
@@ -1691,9 +1698,9 @@ std::optional<bool> SetIndex(const Context& context, Slot object, std::uint32_t 
         return std::nullopt;
     }
     PyObject* target = Resolve(object);
-    const Outcome outcome = SetAny(op.isolate, target, key, Resolve(value));
+    const Outcome outcome = SetAny(op.isolate(), target, key, Resolve(value));
     Py_DECREF(key);
-    return SetAnswer(op.isolate, target, outcome);
+    return SetAnswer(op.isolate(), target, outcome);
 }
 
 std::optional<bool> DefineProperty(const Context& context, Slot object, Slot key, Slot value,
@@ -1708,7 +1715,7 @@ std::optional<bool> DefineProperty(const Context& context, Slot object, Slot key
     }
     PyObject* target = Resolve(object);
     std::optional<bool> answer;
-    if (IsObjectInstance(op.isolate, target)) {
+    if (IsObjectInstance(op.isolate(), target)) {
         const int defined = DefineChecked(AsInstance(target), normalized, Resolve(value),
                                           static_cast<long>(attributes) & ATTRIBUTE_MASK);
         if (defined >= 0) {
@@ -1724,7 +1731,7 @@ std::optional<bool> DefineProperty(const Context& context, Slot object, Slot key
         // Define bypasses setters - for an ordinary object, `__dict__` is
         // where that would go, but a `property` or `__slots__` may own the
         // name, so this is the attribute write and whatever it does.
-        const Outcome outcome = SetAny(op.isolate, target, normalized, Resolve(value));
+        const Outcome outcome = SetAny(op.isolate(), target, normalized, Resolve(value));
         if (outcome != Outcome::Failed) {
             answer = outcome == Outcome::Done;
         }
@@ -1741,13 +1748,13 @@ std::optional<bool> SetAccessorProperty(const Context& context, Slot object, std
         return std::nullopt;
     }
     PyObject* target = Resolve(object);
-    if (!IsObjectInstance(op.isolate, target)) {
+    if (!IsObjectInstance(op.isolate(), target)) {
         // An accessor is something only a `unibind.Object` can hold: a dict
         // item or an attribute cannot run code on read. Refused, not faked.
         return false;
     }
     PyObject* text = TextString(name);
-    PyObject* key = text != nullptr ? NormalizeKey(op.isolate, text) : nullptr;
+    PyObject* key = text != nullptr ? NormalizeKey(op.isolate(), text) : nullptr;
     Py_XDECREF(text);
     if (key == nullptr) {
         return std::nullopt;
@@ -1758,7 +1765,7 @@ std::optional<bool> SetAccessorProperty(const Context& context, Slot object, std
     if ((current & static_cast<long>(PropertyAttribute::DontDelete)) != 0 &&
         PyDict_Contains(instance->properties, key) == 1) {
         answer = false;  // a permanent property is not replaced
-    } else if (CallbackRecord* record = StoreAccessorRecord(op.isolate, getter, setter, data); record != nullptr) {
+    } else if (CallbackRecord* record = StoreAccessorRecord(op.isolate(), getter, setter, data); record != nullptr) {
         if (DefineAccessorRaw(instance, key, record, attributes)) {
             answer = true;
         }
@@ -1776,7 +1783,7 @@ std::optional<bool> HasProperty(const Context& context, Slot object, Slot key) {
     if (normalized == nullptr) {
         return std::nullopt;
     }
-    const int has = HasAny(op.isolate, Resolve(object), normalized);
+    const int has = HasAny(op.isolate(), Resolve(object), normalized);
     Py_DECREF(normalized);
     if (has < 0) {
         return std::nullopt;
@@ -1793,7 +1800,7 @@ std::optional<bool> HasOwnProperty(const Context& context, Slot object, Slot key
     if (normalized == nullptr) {
         return std::nullopt;
     }
-    const int has = HasOwnAny(op.isolate, Resolve(object), normalized);
+    const int has = HasOwnAny(op.isolate(), Resolve(object), normalized);
     Py_DECREF(normalized);
     if (has < 0) {
         return std::nullopt;
@@ -1812,8 +1819,8 @@ std::optional<bool> DeleteProperty(const Context& context, Slot object, Slot key
     }
     PyObject* target = Resolve(object);
     std::optional<bool> answer;
-    if (IsObjectInstance(op.isolate, target)) {
-        switch (DeleteOwn(op.isolate, AsInstance(target), normalized, true)) {
+    if (IsObjectInstance(op.isolate(), target)) {
+        switch (DeleteOwn(op.isolate(), AsInstance(target), normalized, true)) {
             case Outcome::Done:
             case Outcome::Absent:
                 answer = true;  // deleting what is not there succeeds, as in the language
@@ -1843,7 +1850,7 @@ std::optional<bool> DeleteProperty(const Context& context, Slot object, Slot key
             answer =
                 PyList_SetItem(target, position, Py_NewRef(Py_None)) == 0 ? std::optional<bool>(true) : std::nullopt;
         }
-    } else if (PyObject* name = AttributeName(op.isolate, normalized); name != nullptr) {
+    } else if (PyObject* name = AttributeName(op.isolate(), normalized); name != nullptr) {
         if (PyObject_DelAttr(target, name) == 0) {
             answer = true;
         } else if (PyErr_ExceptionMatches(PyExc_AttributeError) != 0) {
@@ -1872,16 +1879,16 @@ std::optional<PropertyAttribute> GetPropertyAttributes(const Context& context, S
     }
     PyObject* target = Resolve(object);
     std::optional<PropertyAttribute> answer;
-    if (IsObjectInstance(op.isolate, target)) {
+    if (IsObjectInstance(op.isolate(), target)) {
         PropertyAttribute attributes = PropertyAttribute::None;
-        if (AttributesChain(op.isolate, AsInstance(target), normalized, &attributes) > 0) {
+        if (AttributesChain(op.isolate(), AsInstance(target), normalized, &attributes) > 0) {
             answer = attributes;
         }
     } else {
         // Whatever else it is, it has no attributes to keep - but an absent
         // property still answers empty rather than `None`, which would claim
         // an ordinary property that is not there (docs/status.md).
-        const int has = HasAny(op.isolate, target, normalized);
+        const int has = HasAny(op.isolate(), target, normalized);
         if (has > 0) {
             const bool hidden = !PyDict_Check(target) && !EnumerableName(normalized);
             answer = hidden ? PropertyAttribute::DontEnum : PropertyAttribute::None;
@@ -1897,9 +1904,9 @@ std::optional<Slot> GetOwnPropertyNames(const Context& context, Slot object, Key
         return std::nullopt;
     }
     PyObject* target = Resolve(object);
-    PyObject* keys = IsObjectInstance(op.isolate, target) ? OwnKeys(op.isolate, AsInstance(target), filter, true)
-                                                          : OwnKeysAny(op.isolate, target, filter);
-    return PushOrNothing(op.isolate, keys);
+    PyObject* keys = IsObjectInstance(op.isolate(), target) ? OwnKeys(op.isolate(), AsInstance(target), filter, true)
+                                                            : OwnKeysAny(op.isolate(), target, filter);
+    return PushOrNothing(op.isolate(), keys);
 }
 
 std::optional<Slot> GetPrototype(const Context& context, Slot object) {
@@ -1912,8 +1919,8 @@ std::optional<Slot> GetPrototype(const Context& context, Slot object) {
         return std::nullopt;
     }
     PyObject* target = Resolve(object);
-    PyObject* prototype = IsObjectInstance(op.isolate, target) ? AsInstance(target)->prototype : nullptr;
-    return PushBorrowed(op.isolate, prototype != nullptr ? prototype : op.isolate.impl().types.nullValue);
+    PyObject* prototype = IsObjectInstance(op.isolate(), target) ? AsInstance(target)->prototype : nullptr;
+    return PushBorrowed(op.isolate(), prototype != nullptr ? prototype : op.isolate().impl().types.nullValue);
 }
 
 std::optional<bool> SetPrototype(const Context& context, Slot object, Slot prototype) {
@@ -1923,17 +1930,17 @@ std::optional<bool> SetPrototype(const Context& context, Slot object, Slot proto
     }
     PyObject* target = Resolve(object);
     PyObject* value = Resolve(prototype);
-    if (!IsObjectInstance(op.isolate, target)) {
+    if (!IsObjectInstance(op.isolate(), target)) {
         PyErr_Format(PyExc_TypeError, "cannot set the prototype of a %s", Py_TYPE(target)->tp_name);
         return std::nullopt;
     }
-    if (IsNull(op.isolate, value)) {
+    if (IsNull(op.isolate(), value)) {
         value = nullptr;
-    } else if (!IsObjectInstance(op.isolate, value)) {
+    } else if (!IsObjectInstance(op.isolate(), value)) {
         PyErr_SetString(PyExc_TypeError, "Object prototype may only be a unibind.Object or null");
         return std::nullopt;
     }
-    if (!AssignPrototype(op.isolate, AsInstance(target), value)) {
+    if (!AssignPrototype(op.isolate(), AsInstance(target), value)) {
         return std::nullopt;
     }
     return true;

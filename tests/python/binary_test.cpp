@@ -53,7 +53,7 @@ TEST_CASE("binary: a buffer too large to allocate is empty, with nothing thrown"
     ub::TryCatch tc(f.iso());
     CHECK_FALSE(ub::ArrayBuffer::New(f.context, std::numeric_limits<std::size_t>::max()).has_value());
     // Half the address space: more than any process can have, on x86 as on x64.
-    CHECK_FALSE(ub::ArrayBuffer::New(f.context, std::numeric_limits<std::size_t>::max() / 2 + 1).has_value());
+    CHECK_FALSE(ub::ArrayBuffer::New(f.context, (std::numeric_limits<std::size_t>::max() / 2) + 1).has_value());
     CHECK_FALSE(tc.HasCaught());
 }
 

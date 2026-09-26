@@ -141,93 +141,93 @@ bool IsSymbol(Isolate& isolate, PyObject* value) noexcept {
 
 // --- inspection ------------------------------------------------------------------
 
-ValueKind KindOf(Slot slot) noexcept {
-    PyObject* value = Resolve(slot);
-    Isolate::Impl& state = IsolateFor(slot).impl();
-    if (value == Py_None) {
+ValueKind KindOf(Slot value) noexcept {
+    PyObject* object = Resolve(value);
+    Isolate::Impl& state = IsolateFor(value).impl();
+    if (object == Py_None) {
         return ValueKind::Undefined;
     }
-    if (value == state.types.nullValue) {
+    if (object == state.types.nullValue) {
         return ValueKind::Null;
     }
-    if (PyBool_Check(value)) {
+    if (PyBool_Check(object)) {
         return ValueKind::Boolean;
     }
-    if (PyLong_Check(value)) {
-        return IsBigInt(value) ? ValueKind::BigInt : ValueKind::Number;
+    if (PyLong_Check(object)) {
+        return IsBigInt(object) ? ValueKind::BigInt : ValueKind::Number;
     }
-    if (PyFloat_Check(value)) {
+    if (PyFloat_Check(object)) {
         return ValueKind::Number;
     }
-    if (PyUnicode_Check(value)) {
+    if (PyUnicode_Check(object)) {
         return ValueKind::String;
     }
-    if (IsType(value, state.types.symbol)) {
+    if (IsType(object, state.types.symbol)) {
         return ValueKind::Symbol;
     }
-    if (IsType(value, state.types.external)) {
+    if (IsType(object, state.types.external)) {
         return ValueKind::External;
     }
-    if (PyList_Check(value) || PyTuple_Check(value)) {
+    if (PyList_Check(object) || PyTuple_Check(object)) {
         return ValueKind::Array;
     }
-    if (PyCallable_Check(value) != 0) {
+    if (PyCallable_Check(object) != 0) {
         return ValueKind::Function;
     }
     return ValueKind::Object;
 }
 
-bool IsType(Slot slot, TypeCode type) noexcept {
-    PyObject* value = Resolve(slot);
-    Isolate::Impl& state = IsolateFor(slot).impl();
+bool IsType(Slot value, TypeCode type) noexcept {
+    PyObject* object = Resolve(value);
+    Isolate::Impl& state = IsolateFor(value).impl();
     const Types& types = state.types;
     switch (type) {
         case TypeCode::Value:
             return true;
         case TypeCode::Primitive:
-            return IsPrimitive(state, value);
+            return IsPrimitive(state, object);
         case TypeCode::Boolean:
-            return PyBool_Check(value);
+            return PyBool_Check(object);
         case TypeCode::Number:
-            return IsNumber(value);
+            return IsNumber(object);
         case TypeCode::Integer: {
-            if (IsPlainInt(value)) {
+            if (IsPlainInt(object)) {
                 int overflow = 0;
-                const long long n = PyLong_AsLongLongAndOverflow(value, &overflow);
+                const long long n = PyLong_AsLongLongAndOverflow(object, &overflow);
                 return overflow == 0 && n >= INT32_MIN && n <= INT32_MAX;
             }
-            if (PyFloat_Check(value)) {
-                const double d = PyFloat_AS_DOUBLE(value);
+            if (PyFloat_Check(object)) {
+                const double d = PyFloat_AS_DOUBLE(object);
                 return d >= INT32_MIN && d <= INT32_MAX && std::trunc(d) == d && !(d == 0 && std::signbit(d));
             }
             return false;
         }
         case TypeCode::Name:
-            return PyUnicode_Check(value) || IsType(value, types.symbol);
+            return PyUnicode_Check(object) || IsType(object, types.symbol);
         case TypeCode::String:
-            return PyUnicode_Check(value);
+            return PyUnicode_Check(object);
         case TypeCode::Symbol:
-            return IsType(value, types.symbol);
+            return IsType(object, types.symbol);
         case TypeCode::BigInt:
-            return IsBigInt(value);
+            return IsBigInt(object);
         case TypeCode::Object:
-            return !IsPrimitive(state, value) && !IsType(value, types.external);
+            return !IsPrimitive(state, object) && !IsType(object, types.external);
         case TypeCode::Array:
-            return PyList_Check(value) || PyTuple_Check(value);
+            return PyList_Check(object) || PyTuple_Check(object);
         case TypeCode::Function:
-            return !IsPrimitive(state, value) && !IsType(value, types.external) && PyCallable_Check(value) != 0;
+            return !IsPrimitive(state, object) && !IsType(object, types.external) && PyCallable_Check(object) != 0;
         case TypeCode::ArrayBuffer:
-            return PyByteArray_Check(value) || PyBytes_Check(value);
+            return PyByteArray_Check(object) || PyBytes_Check(object);
         case TypeCode::ArrayBufferView:
-            return IsType(value, types.typedArray) || IsType(value, types.dataView);
+            return IsType(object, types.typedArray) || IsType(object, types.dataView);
         case TypeCode::TypedArray:
-            return IsType(value, types.typedArray);
+            return IsType(object, types.typedArray);
         case TypeCode::DataView:
-            return IsType(value, types.dataView);
+            return IsType(object, types.dataView);
         case TypeCode::Promise:
-            return IsType(value, types.promise);
+            return IsType(object, types.promise);
         case TypeCode::External:
-            return IsType(value, types.external);
+            return IsType(object, types.external);
     }
     return false;
 }

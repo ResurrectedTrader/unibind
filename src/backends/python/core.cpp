@@ -163,20 +163,20 @@ Platform::Platform(const PlatformOptions& options) {
     if (!stdlib.empty()) {
         const std::filesystem::path lib(stdlib);
         status = PyConfig_SetString(&config, &config.home, lib.parent_path().c_str());
-        if (!PyStatus_Exception(status)) {
+        if (PyStatus_Exception(status) == 0) {
             status = PyWideStringList_Append(&config.module_search_paths, stdlib.c_str());
         }
     } else if (const std::filesystem::path exe = ExecutableDirectory(); !exe.empty()) {
         status = PyConfig_SetString(&config, &config.home, exe.c_str());
     }
-    if (!PyStatus_Exception(status)) {
+    if (PyStatus_Exception(status) == 0) {
         status = PyConfig_SetString(&config, &config.program_name, L"unibind");
     }
-    if (!PyStatus_Exception(status)) {
+    if (PyStatus_Exception(status) == 0) {
         status = Py_InitializeFromConfig(&config);
     }
     PyConfig_Clear(&config);
-    if (PyStatus_Exception(status)) {
+    if (PyStatus_Exception(status) != 0) {
         ReportPlatformFault(EngineFault::Fatal, status.err_msg != nullptr ? status.err_msg : "Py_InitializeFromConfig");
         return;
     }
@@ -268,7 +268,7 @@ std::unique_ptr<Isolate> Isolate::New(const IsolateOptions& options) {
 
     PyThreadState* tstate = nullptr;
     const PyStatus status = Py_NewInterpreterFromConfig(&tstate, &config);
-    if (PyStatus_Exception(status) || tstate == nullptr) {
+    if (PyStatus_Exception(status) != 0 || tstate == nullptr) {
         return nullptr;
     }
 
@@ -384,6 +384,10 @@ Isolate::~Isolate() {
     tCurrentIsolate = nullptr;
 }
 
+// A member because the API is one; what it reads is the error indicator of the
+// thread state attached to this thread, which is this isolate's from `New` to
+// `~Isolate` (decision 11), so there is nothing on the object to consult.
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static)
 bool Isolate::HasPendingException() const noexcept {
     return PyErr_Occurred() != nullptr;
 }
@@ -579,7 +583,7 @@ constexpr const char* ISOLATE_CAPSULE = "unibind.isolate";
     }
     PyObject* dict = PyInterpreterState_GetDict(interp);                                      // borrowed
     PyObject* capsule = dict == nullptr ? nullptr : PyDict_GetItemString(dict, ISOLATE_KEY);  // borrowed
-    if (capsule == nullptr || !PyCapsule_IsValid(capsule, ISOLATE_CAPSULE)) {
+    if (capsule == nullptr || PyCapsule_IsValid(capsule, ISOLATE_CAPSULE) == 0) {
         return nullptr;
     }
     return static_cast<Isolate*>(PyCapsule_GetPointer(capsule, ISOLATE_CAPSULE));
@@ -954,8 +958,9 @@ void CatchPendingException(Isolate& isolate) noexcept {
         PyObject* exception = PyErr_GetRaisedException();
         Py_XSETREF(handler->exception, exception);
         handler->caught = true;
-        handler->terminated = Terminating(isolate) ||
-                              (exception != nullptr && PyErr_GivenExceptionMatches(exception, state.types.terminated));
+        handler->terminated =
+            Terminating(isolate) ||
+            (exception != nullptr && PyErr_GivenExceptionMatches(exception, state.types.terminated) != 0);
         return;
     }
     if (state.nativeDepth > 0) {
@@ -981,16 +986,16 @@ void TryCatchOpen(Isolate& isolate, TryCatchState& storage) noexcept {
     state.tryCatch = handler;
 }
 
-void TryCatchClose(TryCatchState& handler) noexcept {
-    Isolate& isolate = *handler.owner;
-    Isolate::Impl& state = isolate.impl();
+void TryCatchClose(TryCatchState& state) noexcept {
+    Isolate& isolate = *state.owner;
+    Isolate::Impl& impl = isolate.impl();
     // An exception raised since the last question is ours too.
     CatchPendingException(isolate);
-    state.tryCatch = handler.prev;
+    impl.tryCatch = state.prev;
 
-    PyObject* exception = std::exchange(handler.exception, nullptr);
-    PyObject* outer = std::exchange(handler.outer, nullptr);
-    if (exception != nullptr && (handler.terminated || handler.rethrow)) {
+    PyObject* exception = std::exchange(state.exception, nullptr);
+    PyObject* outer = std::exchange(state.outer, nullptr);
+    if (exception != nullptr && (state.terminated || state.rethrow)) {
         // A termination is never consumed, and a rethrow is asked for.
         PyErr_SetRaisedException(exception);
     } else {
@@ -1003,27 +1008,27 @@ void TryCatchClose(TryCatchState& handler) noexcept {
             Py_DECREF(outer);
         }
     }
-    handler.~TryCatchState();
+    state.~TryCatchState();
     // What is pending now belongs to whoever is further out.
     CatchPendingException(isolate);
 }
 
-bool TryCatchHasCaught(const TryCatchState& handler) noexcept {
-    CatchPendingException(*handler.owner);
-    return handler.caught;
+bool TryCatchHasCaught(const TryCatchState& state) noexcept {
+    CatchPendingException(*state.owner);
+    return state.caught;
 }
 
-bool TryCatchHasTerminated(const TryCatchState& handler) noexcept {
-    CatchPendingException(*handler.owner);
-    return handler.caught && handler.terminated;
+bool TryCatchHasTerminated(const TryCatchState& state) noexcept {
+    CatchPendingException(*state.owner);
+    return state.caught && state.terminated;
 }
 
-Slot TryCatchException(const TryCatchState& handler, Isolate& isolate) noexcept {
+Slot TryCatchException(const TryCatchState& state, Isolate& isolate) noexcept {
     CatchPendingException(isolate);
-    if (!handler.caught || handler.terminated || handler.exception == nullptr) {
+    if (!state.caught || state.terminated || state.exception == nullptr) {
         return Slot{};
     }
-    return Push(isolate, UnwrapThrown(isolate, handler.exception));
+    return Push(isolate, UnwrapThrown(isolate, state.exception));
 }
 
 namespace {
@@ -1049,12 +1054,12 @@ namespace {
 
 }  // namespace
 
-std::optional<std::string> TryCatchMessage(const TryCatchState& handler, const Context& context) {
+std::optional<std::string> TryCatchMessage(const TryCatchState& state, const Context& context) {
     CatchPendingException(OwnerOf(context));
-    if (!handler.caught || handler.terminated || handler.exception == nullptr) {
+    if (!state.caught || state.terminated || state.exception == nullptr) {
         return std::nullopt;
     }
-    PyObject* text = CallSupport(OwnerOf(context), "exception_message", handler.exception);
+    PyObject* text = CallSupport(OwnerOf(context), "exception_message", state.exception);
     if (text == nullptr) {
         return std::nullopt;
     }
@@ -1063,12 +1068,12 @@ std::optional<std::string> TryCatchMessage(const TryCatchState& handler, const C
     return message;
 }
 
-std::optional<std::string> TryCatchStackTrace(const TryCatchState& handler, const Context& context) {
+std::optional<std::string> TryCatchStackTrace(const TryCatchState& state, const Context& context) {
     CatchPendingException(OwnerOf(context));
-    if (!handler.caught || handler.terminated || handler.exception == nullptr) {
+    if (!state.caught || state.terminated || state.exception == nullptr) {
         return std::nullopt;
     }
-    PyObject* text = CallSupport(OwnerOf(context), "exception_stack", handler.exception);
+    PyObject* text = CallSupport(OwnerOf(context), "exception_stack", state.exception);
     if (text == nullptr) {
         return std::nullopt;
     }
@@ -1077,15 +1082,15 @@ std::optional<std::string> TryCatchStackTrace(const TryCatchState& handler, cons
     return stack;
 }
 
-std::optional<std::vector<StackFrame>> TryCatchStackFrames(const TryCatchState& handler, const Context& context) {
+std::optional<std::vector<StackFrame>> TryCatchStackFrames(const TryCatchState& state, const Context& context) {
     CatchPendingException(OwnerOf(context));
-    if (!handler.caught || handler.terminated || handler.exception == nullptr) {
+    if (!state.caught || state.terminated || state.exception == nullptr) {
         return std::nullopt;
     }
     // Innermost first: a traceback runs from the outermost frame to the one
     // that raised, so collect it and turn it round.
     std::vector<StackFrame> frames;
-    PyObject* traceback = PyException_GetTraceback(handler.exception);
+    PyObject* traceback = PyException_GetTraceback(state.exception);
     for (PyObject* entry = traceback; entry != nullptr && entry != Py_None;) {
         auto* tb = reinterpret_cast<PyTracebackObject*>(entry);
         PyCodeObject* code = PyFrame_GetCode(tb->tb_frame);
@@ -1111,14 +1116,14 @@ std::optional<std::vector<StackFrame>> TryCatchStackFrames(const TryCatchState& 
     return std::vector<StackFrame>(frames.rbegin(), frames.rend());
 }
 
-std::optional<MessageLocation> TryCatchLocation(const TryCatchState& handler, const Context& context) {
+std::optional<MessageLocation> TryCatchLocation(const TryCatchState& state, const Context& context) {
     Isolate& isolate = OwnerOf(context);
     CatchPendingException(isolate);
-    if (!handler.caught || handler.terminated || handler.exception == nullptr) {
+    if (!state.caught || state.terminated || state.exception == nullptr) {
         return std::nullopt;
     }
     // (script name, line, column, source line or None)
-    PyObject* where = CallSupport(isolate, "exception_location", handler.exception);
+    PyObject* where = CallSupport(isolate, "exception_location", state.exception);
     if (where == nullptr || !PyTuple_Check(where) || PyTuple_GET_SIZE(where) != 4) {
         Py_XDECREF(where);
         return std::nullopt;
@@ -1137,16 +1142,16 @@ std::optional<MessageLocation> TryCatchLocation(const TryCatchState& handler, co
     return location;
 }
 
-void TryCatchReThrow(TryCatchState& handler) noexcept {
-    handler.rethrow = true;
+void TryCatchReThrow(TryCatchState& state) noexcept {
+    state.rethrow = true;
 }
 
-void TryCatchReset(TryCatchState& handler) noexcept {
-    CatchPendingException(*handler.owner);
-    Py_CLEAR(handler.exception);
-    handler.caught = false;
-    handler.terminated = false;
-    handler.rethrow = false;
+void TryCatchReset(TryCatchState& state) noexcept {
+    CatchPendingException(*state.owner);
+    Py_CLEAR(state.exception);
+    state.caught = false;
+    state.terminated = false;
+    state.rethrow = false;
 }
 
 // --- build identity ----------------------------------------------------------------

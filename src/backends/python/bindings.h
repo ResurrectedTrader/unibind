@@ -19,6 +19,7 @@
 #include <deque>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "internal.h"
@@ -139,7 +140,7 @@ struct RealmScope {
     RealmScope& operator=(RealmScope&&) = delete;
 
     BindingsState* state;
-    RealmScope* previous;
+    RealmScope* previous = nullptr;
     ContextRec* rec;
     PyFrameObject* frame;
 };
@@ -200,10 +201,12 @@ class NativeCall {
     [[nodiscard]] Frame& frame() noexcept { return frame_; }
     /// The callback's answer, a new reference, or null if it wrote none.
     [[nodiscard]] PyObject* TakeResult() noexcept;
-
-    CallbackState state;
+    /// What the callback is handed, filled in by the trampoline.
+    [[nodiscard]] CallbackState& state() noexcept { return state_; }
+    [[nodiscard]] const CallbackState& state() const noexcept { return state_; }
 
    private:
+    CallbackState state_;
     Isolate::Impl& impl_;
     Frame* saved_;
     Frame frame_;
@@ -214,7 +217,7 @@ class NativeCall {
 template <class F>
 void Shielded(F&& body) noexcept {
     try {
-        body();
+        std::forward<F>(body)();
     } catch (const std::bad_alloc&) {
         if (PyErr_Occurred() == nullptr) {
             PyErr_NoMemory();

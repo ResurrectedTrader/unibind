@@ -301,7 +301,11 @@ void PackHalf(double d, unsigned char* out) noexcept {
                 if (n == -1 && PyErr_Occurred() != nullptr) {
                     return false;
                 }
-                *out = overflow > 0 ? 255 : overflow < 0 ? 0 : static_cast<std::uint8_t>(std::clamp(n, 0LL, 255LL));
+                if (overflow != 0) {
+                    *out = overflow > 0 ? 255 : 0;
+                } else {
+                    *out = static_cast<std::uint8_t>(std::clamp(n, 0LL, 255LL));
+                }
                 return true;
             }
             double d = 0;
@@ -711,7 +715,7 @@ PyObject* TypedArrayNew(PyTypeObject* type, PyObject* args, PyObject* kwds) {
     // `__index__` does can resize it.
     auto* data = reinterpret_cast<unsigned char*>(PyByteArray_AS_STRING(buffer));
     for (Py_ssize_t i = 0; i < count; ++i) {
-        if (!PackElement(element, PyList_GET_ITEM(items, i), data + i * size)) {
+        if (!PackElement(element, PyList_GET_ITEM(items, i), data + (i * size))) {
             Py_DECREF(items);
             Py_DECREF(buffer);
             return nullptr;
@@ -759,7 +763,7 @@ PyObject* TypedArrayItem(PyObject* object, Py_ssize_t index) {
         PyErr_SetString(PyExc_IndexError, "TypedArray index out of range");
         return nullptr;
     }
-    return UnpackElement(self->type, window.data + index * SizeOf(self->type));
+    return UnpackElement(self->type, window.data + (index * SizeOf(self->type)));
 }
 
 /// Store `value` at element `index`, which may be negative from the end.
@@ -782,7 +786,7 @@ PyObject* TypedArrayItem(PyObject* object, Py_ssize_t index) {
         PyErr_SetString(PyExc_TypeError, "this TypedArray is over a bytes object and is read-only");
         return -1;
     }
-    std::memcpy(window.data + index * SizeOf(self->type), packed, static_cast<std::size_t>(SizeOf(self->type)));
+    std::memcpy(window.data + (index * SizeOf(self->type)), packed, static_cast<std::size_t>(SizeOf(self->type)));
     return 0;
 }
 
@@ -830,7 +834,7 @@ PyObject* TypedArraySubscript(PyObject* object, PyObject* key) {
     const Py_ssize_t size = SizeOf(self->type);
     auto* out = reinterpret_cast<unsigned char*>(PyByteArray_AS_STRING(buffer));
     for (Py_ssize_t i = 0; i < count && window.ok; ++i) {
-        std::memcpy(out + i * size, window.data + (start + i * step) * size, static_cast<std::size_t>(size));
+        std::memcpy(out + (i * size), window.data + ((start + (i * step)) * size), static_cast<std::size_t>(size));
     }
     PyObject* copy = NewTypedArrayObject(Py_TYPE(object), self->type, buffer, 0, count);
     Py_DECREF(buffer);
@@ -881,7 +885,7 @@ int TypedArrayAssign(PyObject* object, PyObject* key, PyObject* value) {
         return -1;
     }
     for (Py_ssize_t i = 0; i < count; ++i) {
-        if (!PackElement(self->type, PyList_GET_ITEM(items, i), packed.data() + i * size)) {
+        if (!PackElement(self->type, PyList_GET_ITEM(items, i), packed.data() + (i * size))) {
             Py_DECREF(items);
             return -1;
         }
@@ -900,7 +904,8 @@ int TypedArrayAssign(PyObject* object, PyObject* key, PyObject* value) {
         return -1;
     }
     for (Py_ssize_t i = 0; i < count; ++i) {
-        std::memcpy(window.data + (start + i * step) * size, packed.data() + i * size, static_cast<std::size_t>(size));
+        std::memcpy(window.data + ((start + (i * step)) * size), packed.data() + (i * size),
+                    static_cast<std::size_t>(size));
     }
     return 0;
 }
@@ -916,7 +921,7 @@ PyObject* TypedArrayToList(PyObject* object, PyObject* /*unused*/) {
     // except the collector - which frees, and never resizes, a bytearray.
     const Window window = WindowOf(self);
     for (Py_ssize_t i = 0; i < length; ++i) {
-        PyObject* item = UnpackElement(self->type, window.data + i * SizeOf(self->type));
+        PyObject* item = UnpackElement(self->type, window.data + (i * SizeOf(self->type)));
         if (item == nullptr) {
             Py_DECREF(list);
             return nullptr;
@@ -962,8 +967,8 @@ PyObject* TypedArraySubarray(PyObject* object, PyObject* args, PyObject* kwds) {
         return nullptr;
     }
     const Py_ssize_t count = std::max<Py_ssize_t>(end - begin, 0);
-    return NewTypedArrayObject(Py_TYPE(object), self->type, self->buffer, self->byteOffset + begin * SizeOf(self->type),
-                               count);
+    return NewTypedArrayObject(Py_TYPE(object), self->type, self->buffer,
+                               self->byteOffset + (begin * SizeOf(self->type)), count);
 }
 
 PyObject* TypedArrayRepr(PyObject* object) {
@@ -1654,7 +1659,7 @@ constexpr int CLONE_MARSHAL_VERSION = 2;
 //   (DICT, [k, v, k, v...])              dict, keys any clonable value
 //   (OBJECT, [k, v, k, v...])            unibind.Object: own enumerable string-keyed properties
 
-enum Tag : int {
+enum Tag : std::uint8_t {
     TAG_UNDEFINED,
     TAG_NULL,
     TAG_BOOL,
@@ -1787,10 +1792,14 @@ class Encoder {
             // A function, a symbol, an External, a promise, a class instance -
             // or a subclass of a clonable type, whose class could not be
             // rebuilt from the data alone. The whole clone fails (value.h).
-            const char* what = PyCallable_Check(value) != 0                ? "a function"
-                               : IsSymbol(isolate_, value)                 ? "a Symbol"
-                               : PyObject_TypeCheck(value, types.external) ? "an External"
-                                                                           : nullptr;
+            const char* what = nullptr;
+            if (PyCallable_Check(value) != 0) {
+                what = "a function";
+            } else if (IsSymbol(isolate_, value)) {
+                what = "a Symbol";
+            } else if (PyObject_TypeCheck(value, types.external) != 0) {
+                what = "an External";
+            }
             if (what != nullptr) {
                 PyErr_Format(CloneErrorClass(isolate_), "%s could not be cloned", what);
             } else {
@@ -1875,7 +1884,7 @@ class Encoder {
                 return false;
             }
             const Py_ssize_t buffer = Visit(view->buffer);
-            if (buffer < 0 || !Record(buffer, view->byteOffset + view->length * SizeOf(view->type))) {
+            if (buffer < 0 || !Record(buffer, view->byteOffset + (view->length * SizeOf(view->type)))) {
                 return false;
             }
             node = Py_BuildValue("(iinnn)", TAG_TYPED, static_cast<int>(view->type), buffer, view->byteOffset,
@@ -1920,7 +1929,7 @@ class Encoder {
         for (Py_ssize_t i = 0; i < count; ++i) {
             PyObject* pair = PyList_GET_ITEM(pairs, i);
             PyList_SET_ITEM(flat, 2 * i, Py_NewRef(PyTuple_GET_ITEM(pair, 0)));
-            PyList_SET_ITEM(flat, 2 * i + 1, Py_NewRef(PyTuple_GET_ITEM(pair, 1)));
+            PyList_SET_ITEM(flat, (2 * i) + 1, Py_NewRef(PyTuple_GET_ITEM(pair, 1)));
         }
         return flat;
     }

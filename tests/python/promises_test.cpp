@@ -330,9 +330,11 @@ failed.set_exception(ValueError('never retrieved'))
     }
 
     TEST_CASE("promises: isolates on several threads each drive their own loop") {
+        constexpr int THREADS = 4;
         std::vector<std::thread> threads;
+        threads.reserve(THREADS);
         std::atomic<int> fulfilled{0};
-        for (int t = 0; t < 4; ++t) {
+        for (int t = 0; t < THREADS; ++t) {
             threads.emplace_back([&fulfilled] {
                 // Nothing that REQUIREs on a thread of our own: a REQUIRE
                 // throws, and a throw out of a thread is std::terminate.
@@ -356,6 +358,6 @@ failed.set_exception(ValueError('never retrieved'))
         for (std::thread& thread : threads) {
             thread.join();
         }
-        CHECK(fulfilled.load() == 4);
+        CHECK(fulfilled.load() == THREADS);
     }
 }
