@@ -204,8 +204,9 @@ allocator - so one of them passing says nothing about the other; and x86 in
 Debug against the engine's debug build, whose assertions have caught backend
 bugs no release engine reports (`docs/testing.md`).
 
-The CPython backend has no workflow yet: its suite and the example's checks are
-run locally - Release and Debug on x64, Release on x86 - before a change lands.
+The CPython backend's workflow (`python.yml`) runs its suite and the example's
+checks the same way - x64 and x86 in Release, and x64 in Debug against a debug
+CPython.
 
 Then install a prefix for consumers:
 
@@ -1399,7 +1400,7 @@ hooked, so on that backend `Fatal` arrives only for a bring-up that failed.
 **Windows only.** x86 and x64 are both built and tested on both JavaScript
 backends, and `CMakeLists.txt` refuses anything else rather than letting it fail
 later. The CPython backend has presets for both and its suite passes on both,
-Release and Debug on x64 and Release on x86; no CI job runs it yet. Nothing in the *design* is Windows-specific; nothing
+Release and Debug on x64 and Release on x86. Nothing in the *design* is Windows-specific; nothing
 has been built anywhere else.
 
 ## Layout

@@ -965,8 +965,6 @@ backend's own C++ heap exactly and make its allocations fail on purpose.
 - **A bring-up that fails.** A `Platform` is made once per process, before the
   suite, so a missing standard library cannot be provoked in it - and with the
   standard library embedded there is none to miss.
-- **Any regular run.** The suite passes Release and Debug on x64 and Release on
-  x86, run by hand; no CI job runs it.
 
 ### No case name has a `;`
 

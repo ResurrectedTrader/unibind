@@ -1,0 +1,119 @@
+# The CPython backend's suite, its examples, and the stand-alone runs that prove
+# a program needs nothing beside its executable.
+#
+# The engine is not downloaded the way V8 and SpiderMonkey are: it is built by
+# vcpkg, from the overlay port in cmake/vcpkg-ports, the first time a tree
+# configures with UNIBIND_BACKEND=python. That is the same thing that happens on
+# a contributor's machine, which is the point of running it here - but from
+# nothing it is a long build: CPython twice (the target triplet's static one and
+# the host one vcpkg needs to build it), OpenSSL, libffi, SQLite, expat, liblzma,
+# bzip2, zstd, mpdecimal and zlib. So vcpkg's binary cache is kept between runs:
+#
+#   * VCPKG_BINARY_SOURCES points vcpkg at a directory in the workspace, and
+#     actions/cache carries that directory from one run to the next.
+#   * The key is the triplet plus a hash of everything that decides what vcpkg
+#     builds - the manifest (its baseline) and every overlay port. A change to
+#     either misses, and the restore-keys prefix still brings back the last
+#     cache of that triplet, so a patch to CPython rebuilds CPython and not
+#     OpenSSL: vcpkg keys each package by its own ABI hash and takes what still
+#     matches.
+#   * It is saved as soon as the configure has installed the packages, and even
+#     if a later step fails - a red test should not cost the next run the build.
+#     Not after a failed configure: a partial cache saved under the final key
+#     would keep a complete one from ever being saved under it.
+#
+# What the job needs from the runner is what the other engine workflows need
+# (see spidermonkey.yml): MSVC 14.44 or newer, the ClangCL toolset, and vcpkg at
+# VCPKG_INSTALLATION_ROOT - here with the manifest's builtin-baseline in its
+# history, because the ports this backend pulls in come from there.
+#
+# Both architectures in Release, as separate jobs for the reason the engine
+# workflows give, and x64 in Debug: a debug CPython (Py_DEBUG) checks its own
+# heap and its reference counts, and every concurrency bug this backend has had
+# inside CPython was found there first (docs/python.md, section 11).
+#
+# The labels run are "suite" and "example": the suite's cases, the whole suite
+# in one process, the stand-alone copies of the test program and the REPL, and
+# the REPL example's own tests. The opt-in stress cases are skipped by default.
+
+name: python
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  suite:
+    name: the suite against CPython (${{ matrix.arch }} ${{ matrix.config }})
+    runs-on: windows-2022
+    # From an empty cache the vcpkg step alone is most of an hour.
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            platform: x64
+            triplet: x64-windows-static
+            config: Release
+          - arch: x86
+            platform: Win32
+            triplet: x86-windows-static
+            config: Release
+          - arch: x64
+            platform: x64
+            triplet: x64-windows-static
+            config: Debug
+    env:
+      VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}\vcpkg-archives,readwrite
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Report the toolsets, and refuse an image with no ClangCL
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $install = & $vswhere -latest -products * -property installationPath
+          Get-ChildItem "$install\VC\Tools\MSVC" -Directory | ForEach-Object { "toolset $($_.Name)" }
+          if (-not (Test-Path "$install\VC\Tools\Llvm\x64\bin\clang-cl.exe")) {
+              throw "no ClangCL toolset on this image; the tree does not build with cl.exe"
+          }
+          New-Item -ItemType Directory -Force -Path "${{ github.workspace }}\vcpkg-archives" | Out-Null
+
+      - name: Restore vcpkg's binary cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: vcpkg-archives
+          key: vcpkg-python-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json', 'cmake/vcpkg-ports/**') }}
+          restore-keys: |
+            vcpkg-python-${{ matrix.triplet }}-
+
+      # Configuring is what builds the engine: the root CMakeLists.txt turns on
+      # the manifest's `python` feature and the overlay ports for this backend,
+      # and the vcpkg toolchain installs them before the project is generated.
+      - name: Configure, which builds CPython
+        id: configure
+        run: >
+          cmake -S . -B build/python
+          -G "Visual Studio 17 2022" -A ${{ matrix.platform }} -T ClangCL
+          -DUNIBIND_BACKEND=python
+          -DUNIBIND_VCPKG_ROOT="${env:VCPKG_INSTALLATION_ROOT}"
+          -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}
+          -DVCPKG_HOST_TRIPLET=x64-windows
+
+      - name: Save vcpkg's binary cache
+        if: always() && steps.configure.outcome == 'success' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: vcpkg-archives
+          key: vcpkg-python-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json', 'cmake/vcpkg-ports/**') }}
+
+      - name: Build
+        run: cmake --build build/python --config ${{ matrix.config }}
+
+      - name: Run the suite and the examples
+        run: ctest --test-dir build/python -C ${{ matrix.config }} -L "suite|example" --output-on-failure
