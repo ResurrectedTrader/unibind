@@ -4,6 +4,20 @@
 
 find_package(doctest CONFIG REQUIRED)
 
+# ---------------------------------------------------------------------------
+# The benchmark
+#
+# The one program here every backend builds: its workloads are C++ against
+# `ub::` and, for the script side, a JavaScript and a Python source for each,
+# chosen at run time by `Platform::BackendName()`. Labelled `benchmark`, which
+# CI does not run; `--quick` only checks that every workload runs and answers.
+# `tests/bench/Compare.cmake` runs it on all three and merges the tables.
+# ---------------------------------------------------------------------------
+add_executable(unibind_bench bench/bench_main.cpp)
+target_link_libraries(unibind_bench PRIVATE unibind::unibind)
+add_test(NAME ${UNIBIND_BACKEND}.benchmark COMMAND unibind_bench --quick)
+set_tests_properties(${UNIBIND_BACKEND}.benchmark PROPERTIES TIMEOUT 300 LABELS "benchmark")
+
 # The python backend runs Python, not JavaScript, so this suite - and the parity
 # comparison built on it - does not apply to it. It has a suite of its own.
 if(UNIBIND_BACKEND STREQUAL "python")
@@ -117,12 +131,6 @@ if(unibindEngineOwnsOperators)
 endif()
 
 # ---------------------------------------------------------------------------
-# The benchmark
-# ---------------------------------------------------------------------------
-add_executable(unibind_bench bench/bench_main.cpp)
-target_link_libraries(unibind_bench PRIVATE unibind::unibind)
-
-# ---------------------------------------------------------------------------
 # unibind/interop/v8.h - defined by one backend, so tested outside the suite
 # ---------------------------------------------------------------------------
 if(UNIBIND_BACKEND STREQUAL "v8")
@@ -206,9 +214,6 @@ set_tests_properties(${UNIBIND_BACKEND}.platform-is-the-gate-on-an-isolate PROPE
 add_test(NAME ${UNIBIND_BACKEND}.worker-threads-belong-to-one-platform
          COMMAND unibind_tests --unibind-worker-threads-belong-to-one-platform)
 set_tests_properties(${UNIBIND_BACKEND}.worker-threads-belong-to-one-platform PROPERTIES TIMEOUT 120 LABELS "suite")
-
-add_test(NAME ${UNIBIND_BACKEND}.benchmark COMMAND unibind_bench --scale 10)
-set_tests_properties(${UNIBIND_BACKEND}.benchmark PROPERTIES TIMEOUT 300 LABELS "benchmark")
 
 # docs/lifetimes.md section 9: a checked build diagnoses a handle used after its
 # frame closed. Diagnosing it means dying, so it runs in a process of its own
