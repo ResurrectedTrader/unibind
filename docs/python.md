@@ -1207,9 +1207,13 @@ searching a directory. This is what CPython's own frozen `os` has in any
 embedding that does not tell it where its standard library is, and the standard
 library is written for it: `logging`, `importlib`, `inspect` and the rest check
 for a missing `__file__`. Every module in the table was imported in an isolate
-both ways, embedded and from disk, and the same 36 failed both ways - the ones
-section 10.2 lists and the ones that need a POSIX-only module (`curses`, `pty`,
-`tty`, `dbm.gnu`, ...). `sys.path` is empty; `sys.prefix` and `sys.exec_prefix`
+both ways, embedded and from disk, and the same ones failed both ways: those that
+need a POSIX-only or macOS module (`curses`, `pty`, `tty`, `dbm.gnu`,
+`multiprocessing.popen_fork`, `_pyrepl.unix_console`, `_ios_support`, ...) and
+`tracemalloc` (section 10.2) - 20 of 560 under 3.14.7, where 3.12 failed 36,
+most of the difference `ctypes` and XML. One fails only embedded:
+`_pyrepl.readline`, new in 3.14, whose import completer reads
+`importlib.__path__[0]`, and a frozen package's `__path__` is empty. `sys.path` is empty; `sys.prefix` and `sys.exec_prefix`
 are the program's directory; nothing on disk is read for an `import`, and nothing
 is written.
 
@@ -1224,22 +1228,23 @@ json.decoder.JSONDecodeError: Expecting property name enclosed in double quotes:
 ```
 
 `inspect.getsource` of a standard-library function raises `OSError`, as it does
-for CPython's own frozen modules. The sources would be about 9 MB more (2 MB
+for CPython's own frozen modules. The sources would be about 9.3 MB more (2.1 MB
 compressed) for something a developer can have by pointing `UNIBIND_PYTHON_HOME`
 at `Lib`, so they are not embedded.
 
 **What is left out**, by `UNIBIND_PYTHON_EMBED_STDLIB_EXCLUDE` - dotted module
-names, each with everything under it: `test` (CPython's own test suite, 31 MB of
-the 46 MB), `idlelib`, `tkinter`, `turtle` and `turtledemo` (no Tk here),
+names, each with everything under it: `test` (CPython's own test suite, 32 MB of
+the 49 MB), `idlelib`, `tkinter`, `turtle` and `turtledemo` (no Tk here),
 `ensurepip` and `venv` (nothing to install into), `lib2to3`, and `pydoc_data`
 (the topic text behind `pydoc.help('if')`, which then says it is not available).
 `site-packages` and `__pycache__` are never walked - neither is a package name -
-and neither is a directory without an `__init__.py`. What remains is 514
-modules, **9.1 MB of marshalled code** (CPython 3.12, x64).
+and neither is a directory without an `__init__.py`. What remains is 552
+modules, **10.1 MB of marshalled code** (CPython 3.14.7, x64; 3.12.13 was 514
+modules and 9.1 MB).
 
 `UNIBIND_PYTHON_EMBED_STDLIB_OPTIMIZE` is `compile()`'s `optimize`: 0, the
 default, keeps asserts and docstrings, as the interpreter runs everything else;
-2 drops both, for 7.7 MB. Debug and Release embed the same bytes: a `Py_DEBUG`
+2 drops both, for 8.7 MB. Debug and Release embed the same bytes: a `Py_DEBUG`
 CPython reads a release build's bytecode (the two share `.pyc` files), and both
 run at optimization level 0. On x86 the interpreter that compiles it is the x86
 one, which runs on an x64 host.
@@ -1341,7 +1346,7 @@ decides how an embedding is shaped:
   isolate made, used and destroyed costs the process - under 1 MB on average is
   the bound, and it measures about nothing - and `stress: process memory over
   many isolates made and destroyed` shows 1000 of them levelling off at about 8
-  MB in all. **Under 3.12** a sub-interpreter's arenas were never freed: about
+  MB in all on x64, and 4.4 MB on x86. **Under 3.12** a sub-interpreter's arenas were never freed: about
   9.5 MB an isolate, for good, and on x86 a few hundred isolates filled the 2 GB
   address space a 32-bit process gets by default. The suite and the REPL are
   still linked `/LARGEADDRESSAWARE` on x86 - 4 GB on 64-bit Windows, for

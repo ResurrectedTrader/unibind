@@ -83,7 +83,7 @@ This was captured with the input piped in. A piped line is echoed after the
 prompt, so the transcript reads the way the session would look on a console.
 
 ```
-Python 3.12.13 on unibind (python) - :help for help, :quit to leave
+Python 3.14.7 on unibind (python) - :help for help, :quit to leave
 >>> c = Counter(3)
 >>> c.increment(), list(c)
 (4, [0, 1, 2, 3])
@@ -111,7 +111,7 @@ tick
 >>> slow()
 TimeoutError: stopped by the watchdog after 1 s
 >>> host.heap()
-{'used_bytes': 83749, 'total_bytes': 83749, 'limit_bytes': 113433419776, 'malloced_bytes': 83749, 'peak_malloced_bytes': 321753}
+{'used_bytes': 64637, 'total_bytes': 64637, 'limit_bytes': 113433419776, 'malloced_bytes': 64637, 'peak_malloced_bytes': 156676}
 >>> :quit
 ```
 
