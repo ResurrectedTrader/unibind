@@ -23,6 +23,7 @@ add_executable(unibind_python_tests
     classes_test.cpp
     stress_test.cpp
     stdlib_test.cpp
+    stdlib_embedded_test.cpp
     lifetimes_test.cpp
     lifetimes_natives_test.cpp
     teardown_test.cpp
@@ -33,6 +34,13 @@ add_executable(unibind_python_tests
 
 target_include_directories(unibind_python_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(unibind_python_tests PRIVATE unibind::unibind doctest::doctest)
+# Which standard library the `stdlib embedded` cases expect when no directory
+# is given: the embedded one, or (built without it) the build tree's Lib.
+if(UNIBIND_PYTHON_EMBED_STDLIB)
+    target_compile_definitions(unibind_python_tests PRIVATE UNIBIND_TEST_STDLIB_EMBEDDED=1)
+else()
+    target_compile_definitions(unibind_python_tests PRIVATE UNIBIND_TEST_STDLIB_EMBEDDED=0)
+endif()
 
 # Every isolate costs CPython 3.12 memory it never gives back (docs/python.md),
 # and a 32-bit program that makes a few hundred of them - as this one does - can
@@ -54,3 +62,28 @@ endif()
 
 add_test(NAME python.whole-suite-in-one-process COMMAND unibind_python_tests)
 set_tests_properties(python.whole-suite-in-one-process PROPERTIES TIMEOUT 900 LABELS "suite")
+
+# The embedded standard library, out of process - see stdlib_embedded_test.cpp.
+if(UNIBIND_PYTHON_EMBED_STDLIB)
+    # A copy of the suite alone in an empty directory, UNIBIND_PYTHON_HOME
+    # unset: nothing on disk to find, and the `stdlib embedded` cases pass from
+    # the embedded table.
+    add_test(NAME python.stdlib-embedded.runs-alone-from-an-empty-directory
+             COMMAND "${CMAKE_COMMAND}"
+                     "-DEXE=$<TARGET_FILE:unibind_python_tests>"
+                     "-DDIR=${CMAKE_CURRENT_BINARY_DIR}/standalone/$<CONFIG>"
+                     "-DARGS=--test-case=stdlib embedded:*"
+                     -P "${CMAKE_CURRENT_SOURCE_DIR}/standalone.cmake")
+    set_tests_properties(python.stdlib-embedded.runs-alone-from-an-empty-directory PROPERTIES
+        LABELS "suite" TIMEOUT 300
+        PASS_REGULAR_EXPRESSION "standard library embedded: .*Status: SUCCESS!.*exit code: 0")
+
+    # UNIBIND_PYTHON_HOME still wins: the same cases, which then expect the
+    # directory's modules rather than the embedded ones.
+    add_test(NAME python.stdlib-embedded.unibind-python-home-still-wins
+             COMMAND unibind_python_tests "--test-case=stdlib embedded:*")
+    set_tests_properties(python.stdlib-embedded.unibind-python-home-still-wins PROPERTIES
+        LABELS "suite" TIMEOUT 300
+        ENVIRONMENT "UNIBIND_PYTHON_HOME=${UNIBIND_PYTHON_STDLIB}"
+        PASS_REGULAR_EXPRESSION "standard library from disk: .*Status: SUCCESS!")
+endif()

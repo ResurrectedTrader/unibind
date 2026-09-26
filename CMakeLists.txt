@@ -53,6 +53,19 @@ set(UNIBIND_SPIDERMONKEY_DIR "" CACHE PATH
 set(UNIBIND_PYTHON_DIR "" CACHE PATH
     "Static CPython in vcpkg's installed layout: include/python3.X/, lib/python3X.lib, debug/lib/python3X_d.lib, tools/python3/Lib/. Empty: vcpkg's python3 port for this triplet")
 
+# The python backend's pure-Python standard library. Embedded, it is compiled
+# into the backend library at build time by the prefix's own
+# tools/python3/python.exe, and a program needs nothing beside it at run time.
+# See docs/python.md, "Where the standard library comes from".
+option(UNIBIND_PYTHON_EMBED_STDLIB
+    "python backend: compile the pure-Python standard library into the backend, so a program ships as one executable" ON)
+set(UNIBIND_PYTHON_EMBED_STDLIB_EXCLUDE
+    "test;idlelib;tkinter;turtle;turtledemo;ensurepip;venv;lib2to3;pydoc_data" CACHE STRING
+    "python backend: dotted module names the embedded standard library leaves out, each with everything under it")
+set(UNIBIND_PYTHON_EMBED_STDLIB_OPTIMIZE "0" CACHE STRING
+    "python backend: compile()'s optimize for the embedded standard library - 0 keeps asserts and docstrings, as the interpreter itself runs; 2 drops both and is about 15% smaller")
+set_property(CACHE UNIBIND_PYTHON_EMBED_STDLIB_OPTIMIZE PROPERTY STRINGS 0 1 2)
+
 set(UNIBIND_V8_VERSION "15.6.8" CACHE STRING
     "Which published V8 build to fetch: the release tag is v8-<version>")
 set(UNIBIND_SPIDERMONKEY_VERSION "153.3.0esr" CACHE STRING
