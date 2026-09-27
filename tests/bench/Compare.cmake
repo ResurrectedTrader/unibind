@@ -25,7 +25,6 @@
 cmake_minimum_required(VERSION 3.25)
 
 set(unibindBackends v8 spidermonkey python)
-set(unibindTitles "V8" "SpiderMonkey" "CPython")
 
 if(NOT DEFINED BUILD_ROOT)
     set(BUILD_ROOT "build")

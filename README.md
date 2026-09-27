@@ -188,8 +188,9 @@ much as C++, and the parity comparison leaves this backend out. It runs
 `tests/python/` instead - **271 cases**, the figure `unibind_python_tests.exe`
 reports, registered with CTest one per case under `python.` plus the whole suite
 in one process and two runs of the embedded standard library's cases out of
-process, one opt-in stress case that runs only when asked for by name, and seven
-more tests for the example REPL under the label `example`. [`tests/python/README.md`](tests/python/README.md) says what it covers.
+process, one opt-in stress case that runs only when asked for by name, seven
+more tests for the example REPL under the label `example`, and the benchmark,
+under the label `benchmark`, which the other backends register too. [`tests/python/README.md`](tests/python/README.md) says what it covers.
 
 CI pins `windows-2022` and MSVC **14.44** on purpose: that is the toolset both
 engine archives were built with, and therefore the one a consumer links
@@ -1255,6 +1256,103 @@ consumer compiled `-flto=thin` (bitcode objects) links against this
 non-LTO-compiled static library and the engine's own archives under `lld-link`,
 and the result runs. What you do not get from that is inlining *across* the
 boundary, which is the whole point of turning it on.
+
+### The three engines against each other
+
+`unibind_bench` is built for every backend and runs the same workloads on
+whichever engine it links. Script-side rows time one `Evaluate` of a loop and
+report per iteration; the loop is the one engine-dependent thing, a JavaScript
+and a Python source per row. C++-side rows are the API called from C++.
+`cmake -P tests/bench/Compare.cmake` runs all three and prints these tables.
+
+**Measured on** an AMD Ryzen 9 9950X3D (16 cores, 32 threads), 96 GB DDR5-4800,
+Windows 11 Pro build 26200, the Ultimate Performance power plan; x64 Release,
+clang-cl 19.1.5 at `/O2`, no LTO; V8 15.6.8, SpiderMonkey 153.3.0esr, CPython
+3.14.7. **The absolute numbers are this machine's. The ratios are the point.**
+Each figure is the median of three runs per engine, interleaved, each run itself
+the median of five timings of about 150 ms after a calibration and a warm-up.
+All nine runs were clean: no compiler, linker or clang-tidy ran, and no other
+process used more than 1.5 cores, with any run that broke that redone. An IDE's
+profiler service used about one core throughout. From one run to the next the
+pure-script rows moved by a few percent, and rows that call into C++ or allocate
+by up to a third, which is what the median over runs is for.
+
+"Net" is the row less the empty loop: the operation without the loop around it.
+`<0.5` means the JIT took the operation out of the loop (see below).
+
+| script-side, ns per iteration | V8 | SpiderMonkey | CPython | V8 net | SpiderMonkey net | CPython net | CPython ÷ V8 | CPython ÷ SpiderMonkey |
+|---|--:|--:|--:|--:|--:|--:|--:|--:|
+| empty loop (baseline) | 0.24 | 0.26 | 15.7 |  |  |  | 66× | 60× |
+| read a property of a script object | 0.24 | 0.27 | 17.0 | <0.5 | <0.5 | 1.30 | 70× | 64× |
+| write a property of a script object | 0.33 | 0.52 | 18.9 | <0.5 | <0.5 | 3.20 | 57× | 37× |
+| read a property of an Object::New object | 0.27 | 0.31 | 41.0 | <0.5 | <0.5 | 25.3 | 150× | 134× |
+| call a script function | 0.30 | 0.32 | 30.4 | <0.5 | <0.5 | 14.7 | 100× | 96× |
+| read a native accessor (Class<T>) | 77.8 | 32.9 | 96.6 | 77.6 | 32.6 | 80.9 | 1.2× | 2.9× |
+| call a native method (Class<T>) | 70.2 | 35.7 | 116.3 | 70.0 | 35.4 | 100.7 | 1.7× | 3.3× |
+| call a native function | 55.1 | 46.0 | 74.5 | 54.9 | 45.7 | 58.8 | 1.4× | 1.6× |
+| read through a named interceptor | 48.0 | 32.1 | 76.6 | 47.8 | 31.8 | 60.9 | 1.6× | 2.4× |
+| construct a native class instance | 737.5 | 720.6 | 422.4 | 737.3 | 720.3 | 406.8 | 0.6× | 0.6× |
+| read an array element (a[i & 7]) | 0.45 | 0.50 | 23.9 | <0.5 | <0.5 | 8.21 | 53× | 47× |
+| read a property of one of 8 script objects (a[i & 7].x) | 0.69 | 0.87 | 28.4 | <0.5 | 0.61 | 12.7 | 41× | 33× |
+| read a typed array element (a[i & 7]) | 0.37 | 0.38 | 31.3 | <0.5 | <0.5 | 15.7 | 84× | 84× |
+| append to a string (a new one every 1024) | 4.42 | 2.39 | 81.3 | 4.18 | 2.13 | 65.7 | 18× | 34× |
+| JSON.stringify / json.dumps of a small object | 123.5 | 170.2 | 1,698 | 123.3 | 169.9 | 1,683 | 14× | 10× |
+
+| C++-side, ns per operation | V8 | SpiderMonkey | CPython | CPython ÷ V8 | CPython ÷ SpiderMonkey |
+|---|--:|--:|--:|--:|--:|
+| Object::New | 69.9 | 14.2 | 39.3 | 0.6× | 2.8× |
+| Object::Get of an Object::New object by key handle | 91.0 | 47.0 | 32.3 | 0.4× | 0.7× |
+| Object::Get of an Object::New object by string_view | 198.5 | 66.3 | 67.5 | 0.3× | 1.0× |
+| Object::Get of a script object by key handle | 87.1 | 46.0 | 33.5 | 0.4× | 0.7× |
+| Object::Set of an Object::New object by key handle | 126.3 | 51.0 | 34.7 | 0.3× | 0.7× |
+| Function::Call of a native function | 134.1 | 64.0 | 43.2 | 0.3× | 0.7× |
+| Function::Call of a script function | 150.7 | 84.1 | 85.4 | 0.6× | 1.0× |
+| Evaluate("1 + 1") - compile and run | 989.7 | 2,409 | 13,484 | 14× | 5.6× |
+| Script::Run of "1 + 1" compiled once | 350.3 | 45.7 | 134.4 | 0.4× | 2.9× |
+| Context::New + destroy | 236,593 | 358,716 | 496.3 | 0.002× | 0.001× |
+| open and close a HandleScope | 5.23 | 3.04 | 3.05 | 0.6× | 1.0× |
+| create a handle | 13.4 | 9.00 | 26.0 | 1.9× | 2.9× |
+| read a handle | 3.57 | 1.91 | 3.24 | 0.9× | 1.7× |
+| escape a handle | 32.0 | 22.1 | 28.1 | 0.9× | 1.3× |
+| create and release a Global | 62.7 | 30.0 | 24.0 | 0.4× | 0.8× |
+| Isolate::New + destroy | 648,175 | 4,116,700 | 51,500,150 | 80× | 13× |
+
+How to read it, in three parts:
+
+- **Script doing its own work, CPython is 30-150 times slower**, and that is
+  the engines, not the binding. V8 and SpiderMonkey compile a hot loop to
+  machine code: 0.24 ns an iteration is about one clock cycle, and a
+  loop-invariant property read or a small function call leaves the loop
+  altogether (the `<0.5` entries). CPython interprets bytecode, and one pass
+  round the empty loop, at 15.7 ns, costs more than most of the operations
+  measured. The one-of-eight-objects row keeps a property read the JIT cannot
+  hoist: under a nanosecond on either JavaScript engine, 4.5 ns more than the
+  plain array row in CPython.
+- **Crossing into C++, CPython is 1.2-3.3 times slower**, because there the
+  JIT has nothing to offer: every engine goes through the binding's callback
+  path, and that cost dominates. SpiderMonkey is the quickest at it. CPython is
+  *faster* at constructing a native instance, because a reference count frees it
+  on the spot, where the JavaScript engines pay for a finalizable object and
+  its collection.
+- **The C++ API itself costs about the same on all three**, and CPython is often
+  the quickest: `Get`, `Set` and `Call` on CPython are direct C calls on
+  reference-counted objects, where every call into V8's public API - which the
+  V8 backend makes and nothing more - sets up VM state, a call-depth scope and
+  a handle scope of its own before doing the work. Its outliers are compiling (`Evaluate`, 14 times
+  V8, which caches compilations), making a handle (an `incref` as well as a
+  frame append), and an isolate (51 ms, a whole sub-interpreter). A realm, a
+  dictionary, costs 500 ns against a JavaScript global's quarter of a
+  millisecond.
+
+**What the JIT rows do and do not say.** A tight loop is the best case for a
+JIT, which may optimise it well past what real code gets, or remove the
+operation entirely. Every loop returns a value the program checks, so nothing
+was dead-code eliminated, but "`<0.5`" does mean the work left the loop. A cold
+path runs in V8's and SpiderMonkey's interpreters, which is nearer CPython's
+figures. The construct row is also the collector's, and the noisiest: one timing
+to the next varied up to fourfold on SpiderMonkey. [`docs/python.md`](docs/python.md)
+section 14 has the longer reading, and what each backend does on the rows that
+stand out.
 
 ## Gotchas worth knowing before you start
 

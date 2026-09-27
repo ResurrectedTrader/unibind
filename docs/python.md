@@ -47,6 +47,7 @@ behaviour below that a test pins names the test.
 11. [What CPython itself costs](#11-what-cpython-itself-costs)
 12. [Python is not a sandbox](#12-python-is-not-a-sandbox)
 13. [Build notes, and what an upgrade has to recheck](#13-build-notes-and-what-an-upgrade-has-to-recheck)
+14. [Performance, against V8 and SpiderMonkey](#14-performance-against-v8-and-spidermonkey)
 
 ## 1. The model
 
@@ -1476,3 +1477,99 @@ library is a substitute.
   afresh; asyncio's policy functions; `threading._shutdown_locks`, gone with
   3.13's C thread handles, which `~Isolate` used to empty; and the module list
   and refusals of section 10.2. No public header of unibind changed.
+
+## 14. Performance, against V8 and SpiderMonkey
+
+The tables are in README "What it costs", with the machine they were measured
+on; `cmake -P tests/bench/Compare.cmake` measures them again. This is what the
+numbers say about this backend, and why.
+
+**How it is measured.** `tests/bench/bench_main.cpp` is one program, built for
+every backend. A script-side row defines a function `bench_<row>(n)` in the
+engine's language - every value the loop touches a local, since a Python global
+is a dictionary lookup and a JavaScript one a context-slot load, and neither is
+what the row is about - then times one `Evaluate` of `bench_<row>(N)`. Every
+body is the empty loop's `s += 1` with the operation put in, so the difference
+from the empty loop is the operation. Each call returns a value the program
+checks against what N iterations must produce, so a JIT that proved the work
+dead could not report a loop that did nothing. Each measurement grows N until a
+run takes about a twentieth of the target, scales it to about 150 ms, runs once
+more untimed, and reports the median of five. The calibration runs are also what
+tiers the JavaScript engines' code up, so the timed runs see the code the engine
+settled on.
+
+**Which Python.** Where the JavaScript row uses an object literal, the Python
+row uses what a Python programmer would write: an instance of a plain class,
+`o.x`. A second row reads the same property from an object `Object::New` made in
+C++, which here is a `unibind.Object` - the JavaScript-shaped object of section
+3 - so the two rows are the language's own object and the binding's. The
+backend's loop is CPython's own: the empty loop's 15.7 ns an iteration is no
+slower than a stock CPython 3.12 running the same function on the same machine
+(19.9 ns; 3.14 is the newer interpreter), so embedding adds nothing measurable
+to the interpreter's own work.
+
+**Script alone: CPython is an interpreter.** Thirty to a hundred and fifty times
+slower is the gap between a bytecode interpreter and an optimising compiler,
+and nothing in the binding is involved. What the JavaScript rows show is partly
+what the JIT removed: a property read of an object that does not change, and a
+call of a small function, leave the loop altogether, and the "net" figure is
+below what the subtraction can resolve. The row that reads `.x` from one of
+eight objects in turn keeps a real load in the loop - under a nanosecond on
+either engine - and the plain array row beside it is the same loop without it,
+so the difference is a property read: about 0.2-0.4 ns on the JavaScript engines
+and 4.5 ns on CPython. On cold code the JavaScript engines run in their own
+interpreters and the gap is far smaller than these rows suggest; a tight loop is
+a JIT's best case.
+
+**Where the binding is the cost.** A native call from script - an accessor, a
+method, a function, an interceptor - is 1.2 to 3.3 times the JavaScript engines'.
+Here the JIT cannot help: a call into C++ goes through the API's callback path
+on every engine, and the binding's work dominates. On this backend that work
+is:
+
+- **A `unibind.Object` property read** walks the JavaScript model: the type's
+  data descriptors first, then the isolate, the key normalised to its property
+  form, a check for members a Python subclass declared, the interceptor, own
+  properties and the prototype chain (`ObjectGetAttr`, `objects.cpp`). That is
+  25 ns, where a plain class instance's attribute is about 1. A script that
+  keeps hot state in its own objects pays the language's price; one that keeps
+  it in objects C++ made pays the model's.
+- **A native method call** costs 20 ns more than an accessor read, because a
+  native function read as an attribute comes back *bound* to its receiver
+  (section 3): `c.increment()` allocates a bound function, calls through it, and
+  frees it. CPython's own method-call optimisation, which skips the bound method
+  for a Python function, does not apply to a type it does not know.
+- **Construction** is the one native row CPython wins, at about 0.6 of either
+  JavaScript engine: an instance is freed by its reference count at the end of
+  the statement (section 4.5), where V8 and SpiderMonkey allocate a finalizable
+  object and pay for collecting it later. It is also the noisiest row on the
+  JavaScript engines, varying up to fourfold between timings with the
+  collector.
+
+**The C++ API.** Called from C++, this backend is as fast as SpiderMonkey and
+faster than V8 at most things. `Get`, `Set` and `Call` are direct calls into
+CPython's C API on reference-counted objects, and nothing is set up around them;
+each of V8's public API calls sets up VM state, a call-depth scope and a handle
+scope of its own. The exceptions:
+
+- **Compiling** is 14 times V8 and 5.6 times SpiderMonkey. `compile_script`
+  (section 1.5) compiles each source twice - the statements and the trailing
+  expression - through CPython's parser and compiler, while V8 answers a repeated
+  compile of the same source from its compilation cache. Compile once and `Run`
+  (134 ns) where a script runs more than once. V8's `Run` (350 ns) is the slow
+  one of that row, because its backend binds the unbound script to the realm on
+  every run, which makes a new function (`RunScript`, and decision 10).
+- **Making a handle** is 2-3 times the JavaScript engines': a `Local` is a strong
+  reference (section 1.2), so it is a reference-count increment as well as the
+  frame append, and the frame's close is a decrement per handle.
+- **An isolate** is a sub-interpreter: 51 ms to make and destroy, against 0.65 ms
+  on V8 and 4 ms on SpiderMonkey. Section 11 has why long-lived isolates are the
+  shape to aim for.
+- **A realm** goes the other way: 500 ns, because it is a dictionary (section
+  1.4), against a quarter to a third of a millisecond for a JavaScript global
+  with its own built-ins.
+
+**One measurement to distrust.** `Function::Call` of a script function from C++
+varies about threefold between the five timings of every run - consistently, in
+every round - where the other rows vary by a fifth. The median is stable across
+rounds (81-104 ns), but it is the least certain figure in the table.
