@@ -679,6 +679,42 @@ namespace {
     return *RecOf(context)->owner;
 }
 
+/// `context` entered for the life of this object - unless it is already the
+/// isolate's current realm, which is the common case, and then nothing at all.
+///
+/// V8 makes an object, an array, a buffer, a view or an error in the current
+/// realm, and binds a script to it; that is the only reason the factories enter
+/// one. When the realm asked for is already current, entering it again makes
+/// the same thing in the same realm, and costs an `Enter` and an `Exit` - each a
+/// push onto two of V8's stacks - on every call. Compared against V8's own
+/// answer rather than against anything this backend tracks: V8 changes the
+/// current realm behind any tracking of ours whenever script calls a function
+/// of another one, and an interop caller can enter one itself.
+class EnterUnlessCurrent {
+   public:
+    explicit EnterUnlessCurrent(const Context& context) noexcept {
+        ContextRec* rec = RecOf(context);
+        v8::Isolate* raw = rec->owner->impl().isolate;
+        if (rec->handle != raw->GetCurrentContext()) {
+            entered_ = rec->handle.Get(raw);
+            entered_->Enter();
+        }
+    }
+    ~EnterUnlessCurrent() {
+        if (!entered_.IsEmpty()) {
+            entered_->Exit();
+        }
+    }
+
+    EnterUnlessCurrent(const EnterUnlessCurrent&) = delete;
+    EnterUnlessCurrent& operator=(const EnterUnlessCurrent&) = delete;
+    EnterUnlessCurrent(EnterUnlessCurrent&&) = delete;
+    EnterUnlessCurrent& operator=(EnterUnlessCurrent&&) = delete;
+
+   private:
+    v8::Local<v8::Context> entered_;
+};
+
 /// Whether a stop is in force - and if one is, V8's own termination armed
 /// again, so that whatever script is reached next stops at its first check.
 ///
@@ -1201,10 +1237,10 @@ std::optional<Slot> GetWellKnownSymbol(Isolate& isolate, WellKnownSymbol which) 
 constexpr uint32_t ARRAY_PREALLOCATED = 1U << 16;
 
 std::optional<Slot> MakeObject(const Context& context) {
-    // Entered, here and in every factory below that is handed a realm: V8 makes
-    // an object, an array, a buffer, a view or an error in the isolate's
-    // *current* realm, and the caller may have a different one entered.
-    const v8::Context::Scope entered(Raw(context));
+    // Entered unless current, here and in every factory below that is handed a
+    // realm: V8 makes an object, an array, a buffer, a view or an error in the
+    // isolate's *current* realm, and the caller may have a different one entered.
+    const EnterUnlessCurrent entered(context);
     return PushOrNothing(OwnerOf(context), v8::Object::New(Raw(OwnerOf(context))));
 }
 
@@ -1215,7 +1251,7 @@ std::optional<Slot> MakeArray(const Context& context, uint32_t length) {
     // makes, holes throughout and nothing allocated for them - because
     // `Array::New` takes an `int`, reading a length above INT_MAX as zero, and
     // ends the process ("invalid size") on a large one within it.
-    const v8::Context::Scope entered(Raw(context));
+    const EnterUnlessCurrent entered(context);
     Isolate& owner = OwnerOf(context);
     v8::Isolate* raw = Raw(owner);
     if (length <= ARRAY_PREALLOCATED) {
@@ -1233,7 +1269,7 @@ std::optional<Slot> MakeArray(const Context& context, uint32_t length) {
 }
 
 std::optional<Slot> MakeError(const Context& context, ErrorKind kind, std::string_view message) {
-    const v8::Context::Scope entered(Raw(context));
+    const EnterUnlessCurrent entered(context);
     Isolate& owner = OwnerOf(context);
     v8::Local<v8::String> text = RawString(owner, message);
     v8::Local<v8::Value> error;
@@ -1489,7 +1525,7 @@ uint32_t ArrayLength(Slot array) noexcept {
 
 std::optional<Slot> MakeArrayBuffer(const Context& context, std::span<const std::byte> bytes, size_t byteLength) {
     assert(bytes.size() <= byteLength && "an array buffer was asked to hold more than it is long");
-    const v8::Context::Scope entered(Raw(context));
+    const EnterUnlessCurrent entered(context);
     Isolate& owner = OwnerOf(context);
     // `MaybeNew`, and the ceiling checked first: `New` answers an allocation
     // that fails by ending the process, and both answer a length past the
@@ -1565,7 +1601,7 @@ template <class View>
 
 std::optional<Slot> MakeTypedArray(const Context& context, ElementType type, Slot buffer, size_t byteOffset,
                                    size_t length) {
-    const v8::Context::Scope entered(Raw(context));
+    const EnterUnlessCurrent entered(context);
     Isolate& owner = OwnerOf(context);
     v8::Local<v8::ArrayBuffer> raw = Resolve(buffer).As<v8::ArrayBuffer>();
     // V8 checks this too, but by aborting rather than by failing, so the check
@@ -1679,7 +1715,7 @@ size_t ArrayBufferViewCopyOut(Slot view, std::span<std::byte> out) noexcept {
 }
 
 std::optional<Slot> MakeDataView(const Context& context, Slot buffer, size_t byteOffset, size_t byteLength) {
-    const v8::Context::Scope entered(Raw(context));
+    const EnterUnlessCurrent entered(context);
     v8::Local<v8::ArrayBuffer> raw = Resolve(buffer).As<v8::ArrayBuffer>();
     // Checked here for the reason `MakeTypedArray` checks: V8 enforces the
     // bounds by aborting, not by failing. A detached buffer is refused too -
@@ -1773,7 +1809,7 @@ std::optional<std::vector<uint8_t>> SerializeValue(const Context& context, Slot 
         return std::nullopt;
     }
     Isolate& owner = OwnerOf(context);
-    v8::Context::Scope entered(Raw(context));
+    const EnterUnlessCurrent entered(context);
     CloneDelegate delegate(Raw(owner));
     v8::ValueSerializer serializer(Raw(owner), &delegate);
     serializer.WriteHeader();
@@ -1790,7 +1826,7 @@ std::optional<std::vector<uint8_t>> SerializeValue(const Context& context, Slot 
 
 std::optional<Slot> DeserializeValue(const Context& context, std::span<const uint8_t> blob) {
     Isolate& owner = OwnerOf(context);
-    v8::Context::Scope entered(Raw(context));
+    const EnterUnlessCurrent entered(context);
     v8::ValueDeserializer deserializer(Raw(owner), blob.data(), blob.size());
     if (deserializer.ReadHeader(Raw(context)).IsNothing()) {
         return std::nullopt;
@@ -3456,7 +3492,7 @@ namespace {
         // header promises one is pending; V8 never sees the source to say so.
         const size_t firstInvalid = FirstInvalidUtf8(source);
         if (firstInvalid != std::string_view::npos) {
-            const v8::Context::Scope entered(Raw(context));
+            const EnterUnlessCurrent entered(context);
             const std::string message =
                 "source is not UTF-8: byte " + std::to_string(firstInvalid) + " does not begin or continue a character";
             Raw(owner)->ThrowException(v8::Exception::SyntaxError(RawString(owner, message)));
@@ -3493,7 +3529,7 @@ namespace {
 
     // Compiling still happens in a realm - that is where a syntax error is
     // reported from - but the result is not tied to it.
-    v8::Context::Scope entered(Raw(context));
+    const EnterUnlessCurrent entered(context);
     v8::Local<v8::UnboundScript> script;
     auto option = v8::ScriptCompiler::kNoCompileOptions;
     if (cached != nullptr) {
@@ -3573,7 +3609,7 @@ std::optional<Slot> RunScript(const Context& context, ScriptRec* script) {
     }
     // Bind to the realm being run in, not the one that compiled it, so the code
     // sees this realm's globals. See unibind/script.h.
-    v8::Context::Scope entered(Raw(context));
+    const EnterUnlessCurrent entered(context);
     v8::Local<v8::Script> bound = script->handle.Get(Raw(owner))->BindToCurrentContext();
     v8::Local<v8::Value> result;
     if (!bound->Run(Raw(context)).ToLocal(&result)) {
