@@ -240,6 +240,12 @@ struct Isolate::Impl {
     /// The innermost callback running, for `ContextEnter` to settle its realm
     /// before it enters another. See `detail::CallRealm`.
     detail::CallRealm* innermostCall = nullptr;
+    /// Released `Global<T>` records, kept for the next one rather than given
+    /// back: a root made and dropped in a loop otherwise costs an allocation
+    /// and a free each time, which was most of what one cost over V8's own.
+    /// Bounded by `MAX_SPARE_GLOBALS`, and freed in `~Isolate`.
+    detail::GlobalNode* spareGlobals = nullptr;
+    uint32_t spareGlobalCount = 0;
 };
 
 namespace {
@@ -562,6 +568,8 @@ void BindTo(ScriptRec* script, ContextRec* realm, v8::Local<v8::Script> bound) {
 struct GlobalNode {
     Isolate* owner = nullptr;
     v8::Global<v8::Value> handle;
+    /// The next node on the isolate's spare list, while this one is on it.
+    GlobalNode* nextSpare = nullptr;
 };
 
 /// A native getter and setter pair, and the property name they answer for.
@@ -3196,8 +3204,29 @@ std::optional<bool> ClassHasInstance(const Context& context, ClassRec* rec, Slot
 // Globals
 // ---------------------------------------------------------------------------
 
+namespace {
+
+/// How many released roots an isolate keeps for reuse. A program holding more
+/// than this at once and dropping them all gets the rest back as memory.
+constexpr uint32_t MAX_SPARE_GLOBALS = 64;
+
+/// A record for a new root: a spare one if the isolate has one, else a new one.
+[[nodiscard]] GlobalNode* NewGlobalNode(Isolate& isolate) {
+    auto& impl = isolate.impl();
+    GlobalNode* node = impl.spareGlobals;
+    if (node == nullptr) {
+        return new GlobalNode();
+    }
+    impl.spareGlobals = node->nextSpare;
+    --impl.spareGlobalCount;
+    node->nextSpare = nullptr;
+    return node;
+}
+
+}  // namespace
+
 GlobalNode* MakeGlobal(Isolate& isolate, Slot value) {
-    auto* node = new GlobalNode();
+    auto* node = NewGlobalNode(isolate);
     node->owner = &isolate;
     ++isolate.impl().embedderRefs;
     node->handle.Reset(Raw(isolate), Resolve(value));
@@ -3213,7 +3242,7 @@ GlobalNode* DuplicateGlobal(GlobalNode* node) {
     // handle the caller asked for, and this has to work with nothing open -
     // `v8::Global::Get` makes a Local, and a Local needs somewhere to live.
     v8::HandleScope scope(raw);
-    auto* copy = new GlobalNode();
+    auto* copy = NewGlobalNode(*node->owner);
     copy->owner = node->owner;
     ++copy->owner->impl().embedderRefs;
     copy->handle.Reset(raw, node->handle.Get(raw));
@@ -3224,8 +3253,16 @@ void ReleaseGlobal(GlobalNode* node) noexcept {
     if (node == nullptr) {
         return;
     }
-    --node->owner->impl().embedderRefs;
-    delete node;
+    auto& impl = node->owner->impl();
+    --impl.embedderRefs;
+    if (impl.spareGlobalCount >= MAX_SPARE_GLOBALS) {
+        delete node;
+        return;
+    }
+    node->handle.Reset();
+    node->nextSpare = impl.spareGlobals;
+    impl.spareGlobals = node;
+    ++impl.spareGlobalCount;
 }
 
 Slot GlobalToSlot(Isolate& isolate, GlobalNode* node) noexcept {
@@ -4144,6 +4181,9 @@ Isolate::~Isolate() {
     // Callback records outlive nothing: the isolate is going, so anything that
     // could still reach them is going too.
     impl_->callbacks.clear();
+    while (impl_->spareGlobals != nullptr) {
+        delete std::exchange(impl_->spareGlobals, impl_->spareGlobals->nextSpare);
+    }
 #if UNIBIND_HANDLE_CHECKS
     // The rule in unibind/isolate.h, diagnosed where it is broken rather than
     // at the crash it causes later: a Context, a Script or a Global<T> the
