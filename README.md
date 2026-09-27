@@ -31,7 +31,7 @@ const int sum = result->To<ub::Integer>()->Int32Value();   // 2
 | V8 15.6 | JavaScript. Implements all of it |
 | SpiderMonkey 153.3.0esr | JavaScript. Implements all of it except two things its engine does not have: the near-heap-limit hook - a call to that one does not link, on purpose - and the inspector, which links and answers `Supported()` with false |
 | CPython 3.14.7 | **Python.** Implements all of it except the inspector, which links and answers `Supported()` with false; its engine-fault reporting covers running out of heap and a failed bring-up, not a crash inside CPython. Where Python and JavaScript disagree - `None` is `undefined`, a missing attribute is an error to Python - the choice is written down in [`docs/python.md`](docs/python.md) |
-| Tests | the JavaScript suite, written once against `ub::`: 413 cases, green on both JavaScript backends, every case compared backend against backend with no divergences. The CPython backend has a suite of its own, written the same way with Python as the script language: 271 cases, plus one opt-in stress case |
+| Tests | the JavaScript suite, written once against `ub::`: 418 cases, green on both JavaScript backends, every case compared backend against backend with no divergences. The CPython backend has a suite of its own, written the same way with Python as the script language: 271 cases, plus one opt-in stress case |
 | Not here | cross-realm access control - see [Limits](#limits) |
 
 > **Read [`docs/gotchas.md`](docs/gotchas.md) before you lose a day to one of
@@ -172,13 +172,13 @@ This preset also builds [`examples/python_repl`](examples/python_repl/README.md)
 an interactive Python prompt whose host bindings exercise most of the binding
 API; `ctest -L example` runs its checks.
 
-The number `ctest` prints is a little larger than 413 and depends on the tree,
+The number `ctest` prints is a little larger than 418 and depends on the tree,
 because it registers the suite's cases *and* a few things that cannot be cases
 among others: the whole suite again in one process, four checks that each need
 a process of their own (five on V8, which adds `unibind/interop/v8.h`'s) (plus two more in a Debug build, which are the two
 checked-build deaths), the benchmark, and the
 cross-backend `parity` comparison (which only compares what has actually been
-built). **413 cases is the figure that means the same thing everywhere** - it is
+built). **418 cases is the figure that means the same thing everywhere** - it is
 what the test binary itself reports, on either backend. The assertion count is not: a case may assert a
 different number of times on each engine, so V8 counts 10999 and SpiderMonkey
 10472, and neither number is the one to compare a run against.
@@ -775,8 +775,10 @@ has to see goes on the instance template instead, as V8's
 counterClass.InstanceTemplate().SetAccessor("value", &ReadValueUntyped, &WriteValueUntyped);
 ```
 
-That costs per instance on SpiderMonkey, which defines the member on each
-object as it is made.
+Both engines stamp such instances from a model rather than defining each
+member on each object: V8 from the template's map, SpiderMonkey by copying a
+hidden model instance's shape, with the getters and setters made once per realm
+and shared.
 
 Recovering the native is checked, and cannot lie:
 

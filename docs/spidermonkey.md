@@ -959,7 +959,7 @@ merely *offers* a DevTools port impossible to build against this engine.
 ### 5.10 What the debug engine found
 
 The suite is run against the engine's debug build too (`UNIBIND_ENGINE_FLAVOR=debug`,
-a Debug configuration; CI runs it on every push). Every engine assertion it hit
+a Debug configuration; the spidermonkey workflow runs it). Every engine assertion it hit
 was a backend bug that the release engine had been quietly tolerating, and none
 of them was the engine's:
 

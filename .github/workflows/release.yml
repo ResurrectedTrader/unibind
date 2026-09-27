@@ -1,6 +1,7 @@
 # Publishes a prefix a consumer can link without building this tree: the public
 # headers, the generated config.h, both backend libraries, and the CMake and
-# MSBuild files that describe them. Run by pushing a tag `vX.Y.Z`.
+# MSBuild files that describe them. Run by hand with a version: it tags the
+# commit it runs on as `vX.Y.Z`, builds, and publishes.
 #
 # One archive per architecture and flavor, holding both backends. That is the
 # shape a single-runtime consumer wants - it compiles its objects once against
@@ -27,19 +28,16 @@
 # debug CRT (/MTd), `release` the release ones (/MT). Nothing else about the
 # prefix differs.
 #
-# Tests are not built here. The suite runs on every push in engines.yml,
-# which is where a tag's commit was already judged; this job
-# only has to produce what that commit installs.
+# Tests are not built here. Run engines.yml by hand on the commit first; this
+# workflow only has to produce what that commit installs.
 
 name: release
 
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
     inputs:
-      tag:
-        description: Tag to publish (must already exist)
+      version:
+        description: Version to publish, X.Y.Z - tagged vX.Y.Z on the commit this runs on
         required: true
 
 permissions:
@@ -49,7 +47,23 @@ env:
   TOOLSET: '14.44'
 
 jobs:
+  # Cheap and first: refuse a malformed version or one already released before
+  # eight Windows builds are spent on it.
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refuse a malformed or existing version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "version must be X.Y.Z, got '$VERSION'"; exit 1; }
+          if gh api "repos/${{ github.repository }}/git/refs/tags/v$VERSION" >/dev/null 2>&1; then
+            echo "tag v$VERSION already exists"; exit 1
+          fi
+
   build:
+    needs: check
     name: ${{ matrix.backend }} ${{ matrix.arch }} ${{ matrix.flavor }}
     runs-on: windows-2022
     timeout-minutes: 120
@@ -61,8 +75,13 @@ jobs:
         flavor: [release, debug]
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.tag || github.ref }}
+
+      # vcpkg.json pins a builtin-baseline; the image's vcpkg clone can be older
+      # than it, and vcpkg reads the baseline out of that commit.
+      - name: Fetch the vcpkg baseline the manifest pins
+        run: |
+          $baseline = (Get-Content vcpkg.json -Raw | ConvertFrom-Json).'builtin-baseline'
+          git -C $env:VCPKG_INSTALLATION_ROOT fetch --quiet origin $baseline
 
       - name: Configure, which fetches the engine
         run: |
@@ -109,8 +128,6 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.tag || github.ref }}
 
       - uses: actions/download-artifact@v4
         with:
@@ -119,7 +136,7 @@ jobs:
       - name: Merge each architecture's two backends into one prefix, and archive it
         run: |
           $ErrorActionPreference = 'Stop'
-          $tag = if ('${{ inputs.tag }}') { '${{ inputs.tag }}' } else { '${{ github.ref_name }}' }
+          $tag = 'v${{ inputs.version }}'
           $version = $tag.TrimStart('v')
           New-Item -ItemType Directory -Force out | Out-Null
           foreach ($arch in 'x86', 'x64') {
@@ -163,7 +180,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = if ('${{ inputs.tag }}') { '${{ inputs.tag }}' } else { '${{ github.ref_name }}' }
+          $tag = 'v${{ inputs.version }}'
           $engines = Get-Content stage/x86-release/engines.txt | ForEach-Object { "- $_" }
           $notes = @(
             "Prebuilt unibind: headers, generated config.h, and both backend libraries, per architecture and flavor."
@@ -175,5 +192,5 @@ jobs:
             "Import ``msbuild/unibind.props`` and set ``UnibindBackend`` plus ``UnibindV8Dir`` or ``UnibindSpiderMonkeyDir``, or use ``find_package(unibind)`` from ``lib/cmake/unibind``. See the README."
           )
           $notes -join "`n" | Out-File -Encoding utf8 notes.md
-          gh release create $tag (Get-ChildItem out/*).FullName --title $tag --notes-file notes.md --verify-tag
+          gh release create $tag (Get-ChildItem out/*).FullName --title $tag --notes-file notes.md --target ${{ github.sha }}
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -131,6 +131,22 @@ if(unibindEngineOwnsOperators)
 endif()
 
 # ---------------------------------------------------------------------------
+# The benchmark's V8 baseline
+#
+# The target is made at the top of this file, where every backend builds it. On
+# V8 it also times each operation against V8 directly, for the ratio between
+# the two - which needs V8's headers, and the same allocator arrangement as the
+# suite when the engine brings its own operators.
+# ---------------------------------------------------------------------------
+if(UNIBIND_BACKEND STREQUAL "v8")
+    target_include_directories(unibind_bench SYSTEM PRIVATE "${UNIBIND_V8_DIR}/include")
+    target_compile_definitions(unibind_bench PRIVATE UNIBIND_BENCH_V8_BASELINE V8_GN_HEADER NOMINMAX WIN32_LEAN_AND_MEAN)
+    if(unibindEngineOwnsOperators)
+        target_link_options(unibind_bench PRIVATE "/FORCE:MULTIPLE")
+    endif()
+endif()
+
+# ---------------------------------------------------------------------------
 # unibind/interop/v8.h - defined by one backend, so tested outside the suite
 # ---------------------------------------------------------------------------
 if(UNIBIND_BACKEND STREQUAL "v8")

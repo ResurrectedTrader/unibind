@@ -37,6 +37,11 @@ struct Client final : ub::InspectorClient {
 
     void RunMessageLoopOnPause() override {
         ++pauses;
+        // What a real client's loop depends on: DevTools only knows to send a
+        // resume once it has been told the script is paused.
+        if (Saw(R"("method":"Debugger.paused")")) {
+            ++pausesAnnounced;
+        }
         quit = false;
         if (duringPause) {
             // What the embedder does when the connection closes mid-pause. It
@@ -99,6 +104,7 @@ struct Client final : ub::InspectorClient {
     ub::InspectorSession* session = nullptr;
     std::optional<std::string> urlPrefix;
     int pauses = 0;
+    int pausesAnnounced = 0;
     int quits = 0;
     bool quit = false;
 };
@@ -208,6 +214,7 @@ UNIBIND_TEST_CASE(INSPECTOR, "inspector: a debugger statement pauses into the cl
     // it; the script then finishes as though nothing had happened.
     CHECK(ub_test::EvalInt(fixture.context, "var before = 1; debugger; before + 1") == 2);
     CHECK(client.pauses == 1);
+    CHECK(client.pausesAnnounced == client.pauses);
     CHECK(client.quits >= 1);
     CHECK(client.Saw("\"method\":\"Debugger.paused\""));
     CHECK(client.Saw("\"method\":\"Debugger.resumed\""));
@@ -585,6 +592,7 @@ UNIBIND_TEST_CASE(INSPECTOR, "inspector: New and Connect answer null only when t
     client.duringPause = [&inspector, &duringPause] { duringPause = inspector->Connect(); };
     CHECK(ub_test::EvalInt(fixture.context, "debugger; 8") == 8);
     CHECK(client.pauses == 1);
+    CHECK(client.pausesAnnounced == client.pauses);
     CHECK(duringPause != nullptr);
 
     duringPause.reset();
@@ -614,6 +622,7 @@ UNIBIND_TEST_CASE(INSPECTOR, "inspector: Resume leaves a pause and does nothing 
     // to feed, and the inspector answers with a quit before Resume returns.
     CHECK(ub_test::EvalInt(fixture.context, "debugger; 9") == 9);
     CHECK(client.pauses == 1);
+    CHECK(client.pausesAnnounced == client.pauses);
     CHECK(client.quits == 1);
 
     attached.session->Resume();
@@ -632,6 +641,7 @@ UNIBIND_TEST_CASE(INSPECTOR, "inspector: Stop during a pause ends the pause, and
     client.duringPause = [&attached] { attached.session->Stop(); };
     CHECK(ub_test::EvalInt(fixture.context, "debugger; 10") == 10);
     CHECK(client.pauses == 1);
+    CHECK(client.pausesAnnounced == client.pauses);
     CHECK(client.quits == 1);
     client.duringPause = nullptr;
 
@@ -641,6 +651,7 @@ UNIBIND_TEST_CASE(INSPECTOR, "inspector: Stop during a pause ends the pause, and
     CHECK(client.quits == 1);
     CHECK(ub_test::EvalInt(fixture.context, "debugger; 11") == 11);
     CHECK(client.pauses == 1);
+    CHECK(client.pausesAnnounced == client.pauses);
 
     // Still answered - but the debugger does not come back on.
     attached.session->DispatchProtocolMessage(R"({"id":91,"method":"Runtime.evaluate","params":{"expression":"6*7"}})");
@@ -651,6 +662,7 @@ UNIBIND_TEST_CASE(INSPECTOR, "inspector: Stop during a pause ends the pause, and
     CHECK(refused.find("\"error\"") != std::string::npos);
     CHECK(ub_test::EvalInt(fixture.context, "debugger; 12") == 12);
     CHECK(client.pauses == 1);
+    CHECK(client.pausesAnnounced == client.pauses);
 }
 
 UNIBIND_TEST_CASE(INSPECTOR, "inspector: a session destroyed inside a pause ends the pause and says nothing more") {
@@ -671,6 +683,7 @@ UNIBIND_TEST_CASE(INSPECTOR, "inspector: a session destroyed inside a pause ends
     };
     CHECK(ub_test::EvalInt(fixture.context, "debugger; 13") == 13);
     CHECK(client.pauses == 1);
+    CHECK(client.pausesAnnounced == client.pauses);
     CHECK(client.quits == 1);
     CHECK(client.messages.size() == sentAtClose);
 
@@ -706,4 +719,190 @@ UNIBIND_TEST_CASE(INSPECTOR, "inspector: a session destroyed inside a pause ends
 
     again.reset();
     attached.inspector->ContextDestroyed(fixture.context);
+}
+
+namespace {
+
+/// A native the script calls, which dispatches a message while it is inside -
+/// what an embedder's `delay()` does when it services the debugger between
+/// slices of sleep.
+struct DispatchInside {
+    ub::InspectorSession* session = nullptr;
+    std::string message;
+    int calls = 0;
+};
+
+void DispatchInsideNative(const ub::CallbackInfo& info) {
+    auto* inside = info.Data<DispatchInside>();
+    if (inside->calls++ == 0) {
+        inside->session->DispatchProtocolMessage(inside->message);
+    }
+}
+
+}  // namespace
+
+UNIBIND_TEST_CASE(INSPECTOR, "inspector: Debugger.pause while idle pauses the next script that runs") {
+    // DevTools' pause button, pressed while nothing is running: the engine
+    // breaks as soon as script next runs.
+    ub_test::Fixture fixture;
+    Client client;
+    const Attached attached = Attach(fixture, client);
+    if (!attached) {
+        return;
+    }
+
+    attached.session->DispatchProtocolMessage(R"({"id":40,"method":"Debugger.enable"})");
+    REQUIRE_FALSE(client.ResponseTo(40).empty());
+    attached.session->DispatchProtocolMessage(R"({"id":41,"method":"Debugger.pause"})");
+    CHECK_FALSE(client.ResponseTo(41).empty());
+    client.onPause = {R"({"id":42,"method":"Debugger.resume"})"};
+
+    CHECK(ub_test::EvalInt(fixture.context, "function two() { return 2; } two() + 1") == 3);
+    CHECK(client.pauses == 1);
+    CHECK(client.pausesAnnounced == client.pauses);
+    CHECK(client.Saw("\"method\":\"Debugger.paused\""));
+}
+
+UNIBIND_TEST_CASE(INSPECTOR, "inspector: Debugger.pause dispatched into a busy script pauses it") {
+    // The pause button against a script spinning in JavaScript: the request
+    // comes from the socket's thread, and the pause lands in the loop.
+    ub_test::Fixture fixture;
+    Client client;
+    const Attached attached = Attach(fixture, client);
+    if (!attached) {
+        return;
+    }
+
+    attached.session->DispatchProtocolMessage(R"({"id":50,"method":"Debugger.enable"})");
+    REQUIRE_FALSE(client.ResponseTo(50).empty());
+    client.onPause = {
+        R"({"id":51,"method":"Runtime.evaluate","params":{"expression":"globalThis.stopLooping = true"}})",
+        R"({"id":52,"method":"Debugger.resume"})"};
+
+    Remote remote;
+    remote.session = attached.session.get();
+    remote.message = R"({"id":53,"method":"Debugger.pause"})";
+    std::atomic<bool> finished{false};
+    const std::shared_ptr<ub::InspectorDispatcher> dispatcher = attached.inspector->Dispatcher();
+    std::thread requester([dispatcher, &remote] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        (void)dispatcher->RequestDispatch(&DispatchRemote, ub::CallbackData::For(remote));
+    });
+    ub::Isolate* isolate = &fixture.iso();
+    std::thread watchdog([isolate, &finished] {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        while (!finished && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        if (!finished) {
+            isolate->TerminateExecution();
+        }
+    });
+
+    ub_test::Expose(fixture.context, "stopLooping", ub::False(fixture.iso()));
+    const auto result =
+        ub::Evaluate(fixture.context, "function tick() {} while (!globalThis.stopLooping) { tick(); } 'finished'");
+    finished = true;
+    requester.join();
+    watchdog.join();
+    fixture.iso().CancelTerminateExecution();
+
+    REQUIRE(result.has_value());
+    CHECK(ub_test::TextOf(*result) == "finished");
+    CHECK(remote.ran);
+    CHECK(client.pauses == 1);
+    CHECK(client.pausesAnnounced == client.pauses);
+    CHECK(client.Saw("\"method\":\"Debugger.paused\""));
+}
+
+UNIBIND_TEST_CASE(INSPECTOR, "inspector: Debugger.pause dispatched inside a native call pauses when script resumes") {
+    // An embedder's delay() services the debugger while the script is inside
+    // it: the pause is dispatched with script on the stack but not running,
+    // and must land once the native returns and script carries on.
+    ub_test::Fixture fixture;
+    Client client;
+    const Attached attached = Attach(fixture, client);
+    if (!attached) {
+        return;
+    }
+
+    attached.session->DispatchProtocolMessage(R"({"id":60,"method":"Debugger.enable"})");
+    REQUIRE_FALSE(client.ResponseTo(60).empty());
+    client.onPause = {R"({"id":61,"method":"Debugger.resume"})"};
+
+    DispatchInside inside{.session = attached.session.get(), .message = R"({"id":62,"method":"Debugger.pause"})"};
+    const auto native = ub::Function::New(fixture.context, &DispatchInsideNative, ub::CallbackData::For(inside));
+    REQUIRE(native.has_value());
+    ub_test::Expose(fixture.context, "idle", *native);
+
+    CHECK(ub_test::EvalInt(fixture.context, R"(
+        function step(n) { return n + 1; }
+        let n = 0;
+        for (let i = 0; i < 3; i++) { idle(); n = step(n); }
+        n)") == 3);
+    CHECK_FALSE(client.ResponseTo(62).empty());
+    CHECK(client.pauses == 1);
+    CHECK(client.pausesAnnounced == client.pauses);
+    CHECK(client.Saw("\"method\":\"Debugger.paused\""));
+}
+
+namespace {
+
+/// An embedder's delay(): pump jobs and sleep, in slices, with script below it
+/// on the stack.
+void PumpingDelay(const ub::CallbackInfo& info) {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
+    while (std::chrono::steady_clock::now() < until) {
+        info.GetIsolate().PumpJobs();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+}
+
+}  // namespace
+
+UNIBIND_TEST_CASE(INSPECTOR,
+                  "inspector: Debugger.pause requested while script sleeps in a pumping native pauses after it") {
+    // The whole path as an embedder has it: the pause arrives on the socket's
+    // thread while the script is inside a native that pumps jobs and sleeps,
+    // so the dispatch runs from PumpJobs with script suspended beneath it. The
+    // script must break once the native returns.
+    ub_test::Fixture fixture;
+    Client client;
+    const Attached attached = Attach(fixture, client);
+    if (!attached) {
+        return;
+    }
+
+    attached.session->DispatchProtocolMessage(R"({"id":70,"method":"Debugger.enable"})");
+    REQUIRE_FALSE(client.ResponseTo(70).empty());
+    client.onPause = {R"({"id":71,"method":"Debugger.resume"})"};
+
+    const auto delay = ub::Function::New(fixture.context, &PumpingDelay);
+    REQUIRE(delay.has_value());
+    ub_test::Expose(fixture.context, "delay", *delay);
+
+    Remote remote;
+    remote.session = attached.session.get();
+    remote.message = R"({"id":72,"method":"Debugger.pause"})";
+    const std::shared_ptr<ub::InspectorDispatcher> dispatcher = attached.inspector->Dispatcher();
+    std::thread requester([dispatcher, &remote] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        (void)dispatcher->RequestDispatch(&DispatchRemote, ub::CallbackData::For(remote));
+    });
+
+    const int result = ub_test::EvalInt(fixture.context, R"(
+        function step(n) { return n + 1; }
+        let m = 0;
+        delay();
+        m = step(m);
+        m = step(m);
+        m)");
+    requester.join();
+
+    CHECK(result == 2);
+    CHECK(remote.ran);
+    CHECK_FALSE(client.ResponseTo(72).empty());
+    CHECK(client.pauses == 1);
+    CHECK(client.pausesAnnounced == client.pauses);
+    CHECK(client.Saw("\"method\":\"Debugger.paused\""));
 }

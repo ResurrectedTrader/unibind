@@ -77,8 +77,9 @@
 
 name: lint
 
+# The formatter on every pull request - it is seconds - and clang-tidy only by
+# hand, since each tidy job fetches an engine and compiles.
 on:
-  push:
   pull_request:
   workflow_dispatch:
 
@@ -116,6 +117,7 @@ jobs:
 
   tidy:
     name: clang-tidy against ${{ matrix.backend }}
+    if: github.event_name == 'workflow_dispatch'
     runs-on: windows-2022
     # CPython from an empty vcpkg cache is most of an hour before tidy starts,
     # which is why `python-suite` allows 180; the same allowance here.
@@ -134,6 +136,13 @@ jobs:
             generate: ''
     steps:
       - uses: actions/checkout@v4
+
+      # vcpkg.json pins a builtin-baseline; the image's vcpkg clone can be older
+      # than it, and vcpkg reads the baseline out of that commit.
+      - name: Fetch the vcpkg baseline the manifest pins
+        run: |
+          $baseline = (Get-Content vcpkg.json -Raw | ConvertFrom-Json).'builtin-baseline'
+          git -C $env:VCPKG_INSTALLATION_ROOT fetch --quiet origin $baseline
 
       - name: Pin the tools, and refuse an image without them
         run: |

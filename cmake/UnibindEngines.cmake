@@ -226,6 +226,13 @@ endfunction()
 # differently without them, and the mismatch mostly does not show up as a
 # compile error. MOZ_STATIC_JS is the same switch under mozilla-config's name.
 #
+# JS_STANDALONE says the library is a standalone engine build, as it is, and
+# mozilla/Types.h needs it with STATIC_JS_API (and no MOZ_MEMORY) before it
+# declares mfbt and the allocator (moz_xmalloc, moz_arena_malloc,
+# gMozCrashReason, ...) as plain functions. Without it they are declared
+# dllimport, and every link against the static library warns LNK4217 and
+# reaches each of them through an import thunk.
+#
 # ENABLE_EXPLICIT_RESOURCE_MANAGEMENT is the trap. The prebuilt library was
 # compiled with it, but js-config.h - which is the header bundle's record of
 # what the build enabled - does not mention it. It gates an enumerator in the
@@ -246,7 +253,7 @@ endfunction()
 # because the inline constructor meets the library's out-of-line one.
 function(unibind_spidermonkey_definitions target)
     target_compile_definitions(${target} PRIVATE
-        STATIC_JS_API MOZ_STATIC_JS XP_WIN ENABLE_EXPLICIT_RESOURCE_MANAGEMENT)
+        STATIC_JS_API MOZ_STATIC_JS JS_STANDALONE XP_WIN ENABLE_EXPLICIT_RESOURCE_MANAGEMENT)
     string(TOLOWER "${UNIBIND_ENGINE_FLAVOR}" flavour)
     if(flavour STREQUAL "debug")
         target_compile_definitions(${target} PRIVATE DEBUG MOZ_DIAGNOSTIC_ASSERT_ENABLED)

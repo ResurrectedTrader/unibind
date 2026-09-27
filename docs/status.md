@@ -14,7 +14,7 @@ backend without one can define none of them.
 
 **Where the two JavaScript backends are.** Both implement everything the headers declare
 that their engines can do, decisions 1-29, and the suite agrees case for case:
-413 cases compared, **no divergences**. The single `SKIPPED | SKIPPED` row is the
+418 cases compared, **no divergences**. The single `SKIPPED | SKIPPED` row is the
 harness's own test of the skip path, which exists so that the machinery for
 reporting a missing area is exercised on every backend rather than only on the
 day one falls behind.

@@ -1,4 +1,4 @@
-# The one rule the whole design rests on, checked on every push.
+# The one rule the whole design rests on, checked when run by hand.
 #
 # The other two workflows fetch an engine and run the suite against it; this one
 # deliberately has no engine anywhere. `tools/headers_only` builds every header
@@ -26,9 +26,9 @@
 
 name: headers
 
+# Run by hand (Actions -> this workflow -> Run workflow): the engine jobs are
+# long, and every push paying for them burned Actions minutes for nothing.
 on:
-  push:
-  pull_request:
   workflow_dispatch:
 
 permissions:

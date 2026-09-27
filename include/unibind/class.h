@@ -402,9 +402,10 @@ class Class {
     /// them, as script that copies an object property by property expects. It
     /// applies to instances made by `new` and by `Wrap` alike.
     ///
-    /// The cost is per instance: SpiderMonkey defines each member on each
-    /// object as it is made, where the prototype holds it once. Declare here
-    /// only what has to be own.
+    /// Each instance holds its own copy of the property table, where the
+    /// prototype holds it once; both engines stamp it from a model rather than
+    /// defining members one by one, so the cost is memory more than time.
+    /// Declare here what has to be own.
     [[nodiscard]] ObjectTemplate InstanceTemplate() const {
         return ObjectTemplate(detail::ClassInstanceTemplate(rec_));
     }
