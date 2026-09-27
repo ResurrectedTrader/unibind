@@ -50,6 +50,15 @@ if(NOT EXISTS "${_unibind_backend_lib}")
     message(FATAL_ERROR "unibind: no @UNIBIND_BACKEND_LIB_NAME@ under '${_unibind_prefix}/@UNIBIND_INSTALL_LIB_DIR@'.")
 endif()
 
+# Libraries that come with the engine and sit beside it under the same
+# directory: the python backend's zlib, openssl and the rest. Empty for the
+# JavaScript engines, which are one library each.
+set(_unibind_engine_extra_libs "")
+foreach(_unibind_lib IN ITEMS @UNIBIND_ENGINE_EXTRA_LIB_NAMES@)
+    list(APPEND _unibind_engine_extra_libs "${UNIBIND_@UNIBIND_BACKEND_UPPER@_DIR}/${_unibind_lib}")
+endforeach()
+unset(_unibind_lib)
+
 # The headers come with it, so that linking a backend is the whole of consuming
 # unibind for a target that has its own sources. A target that only *compiles*
 # - an object library whose objects are linked twice, once per engine - links
@@ -57,8 +66,9 @@ endif()
 add_library(unibind::backend_@UNIBIND_BACKEND@ STATIC IMPORTED)
 set_target_properties(unibind::backend_@UNIBIND_BACKEND@ PROPERTIES
     IMPORTED_LOCATION "${_unibind_backend_lib}"
-    INTERFACE_LINK_LIBRARIES "unibind::headers;${_unibind_engine_lib};@UNIBIND_ENGINE_SYSTEM_LIBS_CMAKE@")
+    INTERFACE_LINK_LIBRARIES "unibind::headers;${_unibind_engine_lib};${_unibind_engine_extra_libs};@UNIBIND_ENGINE_SYSTEM_LIBS_CMAKE@")
 
 unset(_unibind_engine_lib)
+unset(_unibind_engine_extra_libs)
 unset(_unibind_backend_lib)
 unset(_unibind_prefix)

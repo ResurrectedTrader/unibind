@@ -69,6 +69,22 @@
       }
     },
     {
+      "name": "python",
+      "inherits": "x86",
+      "displayName": "CPython backend (x86, ClangCL)",
+      "cacheVariables": {
+        "UNIBIND_BACKEND": "python"
+      }
+    },
+    {
+      "name": "python-x64",
+      "inherits": "x64",
+      "displayName": "CPython backend (x64, ClangCL)",
+      "cacheVariables": {
+        "UNIBIND_BACKEND": "python"
+      }
+    },
+    {
       "name": "tidy-base",
       "hidden": true,
       "description": "Not a build. The Visual Studio generator writes no compile_commands.json, so clang-tidy has nothing to drive; this emits one with the same ClangCL toolchain over Ninja. See docs/testing.md.",
@@ -98,6 +114,14 @@
       "cacheVariables": {
         "UNIBIND_BACKEND": "spidermonkey"
       }
+    },
+    {
+      "name": "tidy-python",
+      "inherits": "tidy-base",
+      "displayName": "compile database for clang-tidy (CPython)",
+      "cacheVariables": {
+        "UNIBIND_BACKEND": "python"
+      }
     }
   ],
   "buildPresets": [
@@ -122,6 +146,18 @@
     {
       "name": "spidermonkey-x64",
       "configurePreset": "spidermonkey-x64",
+      "configuration": "Release",
+      "jobs": 1
+    },
+    {
+      "name": "python",
+      "configurePreset": "python",
+      "configuration": "Release",
+      "jobs": 1
+    },
+    {
+      "name": "python-x64",
+      "configurePreset": "python-x64",
       "configuration": "Release",
       "jobs": 1
     }
@@ -154,6 +190,22 @@
     {
       "name": "spidermonkey-x64",
       "configurePreset": "spidermonkey-x64",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "python",
+      "configurePreset": "python",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "python-x64",
+      "configurePreset": "python-x64",
       "configuration": "Release",
       "output": {
         "outputOnFailure": true

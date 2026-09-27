@@ -13,5 +13,6 @@
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup Label="unibind engine default (@UNIBIND_BACKEND@)">
     <@UNIBIND_MSBUILD_ENGINE_DIR_PROP@ Condition="'$(@UNIBIND_MSBUILD_ENGINE_DIR_PROP@)' == ''">@UNIBIND_ENGINE_DIR@</@UNIBIND_MSBUILD_ENGINE_DIR_PROP@>
+@UNIBIND_MSBUILD_ENGINE_EXTRA@
   </PropertyGroup>
 </Project>

@@ -1,7 +1,14 @@
 # The suite
 
-One suite, written once against `ub::` only, run against every backend the
-tree can build. A test that names an engine type has failed at its job.
+One suite, written once against `ub::` only, run against every JavaScript
+backend the tree can build. A test that names an engine type has failed at its
+job.
+
+**The CPython backend does not run it.** Its scripts are Python, and these cases
+are JavaScript source as much as C++, so it has a suite of its own in
+[`python/`](python/README.md), written the same way. `tests/CMakeLists.txt`
+builds that one instead when `UNIBIND_BACKEND=python`, and the parity comparison
+below leaves the python backend out.
 
 ```powershell
 cmake --preset v8
@@ -31,7 +38,9 @@ another - which is the failure it exists to find.
 are *already* built and never compiles anything, so a plain `ctest` run stays a
 few seconds rather than an hour.
 
-A backend joins the comparison by existing: nothing lists them.
+A backend joins the comparison by existing: nothing lists them - except
+`python`, which `cmake/RunParity.cmake` skips by name, because its cases are not
+these cases.
 
 ## What a CTest run looks like
 
@@ -83,6 +92,7 @@ name in `UNIBIND_TEST_CASE`. Nothing else knows the list.
 ## Layout
 
 ```
+python/             the CPython backend's suite - see python/README.md
 main.cpp            the runner, plus the checks that need a process of their
                     own: the two deliberately-fatal checked-build ones,
                     comparing `Global`s with no scope open, and the two about
@@ -111,3 +121,5 @@ cmake/              the capability probe, the engine-allocator probe, and the
 - Keep case names stable and identical across backends: the parity matrix joins
   on them.
 - `|` is the parity reporter's separator, so it must not appear in a case name.
+- Nor may `;`: CTest registers each case by name, CMake splits a name at `;`,
+  and the halves are filters that match nothing - which passes.

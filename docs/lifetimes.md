@@ -69,13 +69,17 @@ handle to its caller?**
   Heap-allocatable, movable. The header warns it is a *root*: a cycle through
   one leaks unconditionally.
 
-### The shape of a third engine (not built, not paid for)
+### The shape of a third engine
 
 QuickJS and Duktape refcount instead of tracing, and never move. There, a
 handle must own a reference and release it deterministically, and copying a
 handle is a refcount bump. That is a *stricter* release discipline and a
-*looser* address discipline than either engine here. Section 12 says what the
-chosen model would cost such a backend. We do not pay for it now.
+*looser* address discipline than either engine here. Section 12 said what the
+chosen model would cost such a backend, before one existed.
+
+One does now, and it is CPython rather than a JavaScript engine: reference
+counted, with a cycle collector on top, and objects that never move. Section 12
+says what was built, and `docs/python.md` the rest.
 
 ## 3. The shared truth
 
@@ -344,7 +348,13 @@ destruction are the `Rooted` link/unlink, which is exactly the LIFO discipline
 the API already requires of callers, so the engine's assertion and the API's
 rule are the same rule.
 
-Both frames fit in the `HandleScope`'s inline byte storage, whose size comes
+**CPython.** The frame holds strong references: `UNIBIND_FRAME_INLINE_SLOTS`
+`PyObject*`s inline and a spill buffer from `::operator new(std::nothrow)` above
+that. Slot *i* is element *i*, and a callback frame's slots `[0, argc)` are the
+vectorcall argument array, which CPython holds for the call. Closing the frame
+releases every reference it took; section 12 has the rest.
+
+All three frames fit in the `HandleScope`'s inline byte storage, whose size comes
 from the generated `unibind/config.h`; the backend `static_assert`s that its frame
 fits. Too big is a compile error in the backend, never a silent heap fallback.
 
@@ -497,25 +507,36 @@ caller demote it. Correct, and no escape mechanism needed — but it puts an
 allocation on every returning factory function, which is most of them.
 **Rejected on cost**; the explicit `Escape` is 20 characters and no malloc.
 
-## 12. A future refcounted backend
+## 12. A refcounted backend
 
-The model does not preclude one, and does not pay for one.
+This section used to be a prediction: that the model neither precludes a
+refcounting engine nor pays for one, and what such a backend would cost. The
+CPython backend (`src/backends/python/`, `docs/python.md`) is that backend, and
+the prediction held line for line.
 
-A QuickJS-style backend would make a frame a `std::vector<JSValue>` that
-`JS_FreeValue`s every slot when it closes, which is precisely the scope
-semantics the API already specifies. Copying a `Local` copies an ordinal and
-touches no refcount. `Global<T>` becomes a single owned `JSValue`.
-`Escape` becomes `JS_DupValue` into the parent plus the free the closing frame
-was going to do anyway.
+- **A frame is an array of owned references** - `PyObject*`, eight inline and a
+  spill buffer above that - released in reverse when it closes. That is the scope
+  semantics the API already specified; nothing in §4 or §5 changed.
+- **Copying a `Local` copies an ordinal** and touches no reference count, so a
+  handle is as cheap to pass around as on the tracing engines.
+- **`Global<T>` is one owned reference**, and **`Escape` is one `Py_NewRef` into
+  the parent** - free, and unbounded, since nothing about a refcounted object
+  pins it to the frame that made it.
+- **§8's borrowed argument region needed nothing**: a callback frame's slots
+  `[0, argc)` are the vectorcall argument array, which CPython holds for the
+  call, and the frame already knew where its borrowed prefix ends.
+- **Rule 9 is reachable** because the spill buffer comes from
+  `::operator new(std::nothrow)`, the lever the suites use to make a frame fail
+  to grow; a frame that cannot grow releases the value it was handed and yields
+  an empty handle with `MemoryError` pending.
 
-What such a backend pays that a tracing one does not: one refcount pair per
-*slot* (not per handle), and the frame's destructor becomes a loop instead of a
-no-op. That is the honest cost, and it is the right cost — it is what the
-engine charges.
-
-The one thing that would have to be revisited is §8's borrowed argument region:
-borrowed slots must not be freed by the frame, so the frame needs to know where
-the borrowed prefix ends. It already does, for an unrelated reason.
+The cost is the one predicted, and it is the engine's: one reference-count pair
+per *slot* (not per handle), and a frame destructor that is a loop rather than a
+no-op. No storage budget had to be raised. What CPython added that the
+prediction did not need to think about is that objects never move, so §3's point
+3 - no stable address - is moot there; the model's indirection costs that backend
+one load it did not strictly need, which is the price of one model for three
+engines.
 
 ## 13. Revisit triggers
 

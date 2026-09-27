@@ -28,8 +28,8 @@
 # debug CRT (/MTd), `release` the release ones (/MT). Nothing else about the
 # prefix differs.
 #
-# Tests are not built here. Run v8.yml and spidermonkey.yml by hand on the
-# commit first; this workflow only has to produce what that commit installs.
+# Tests are not built here. Run engines.yml by hand on the commit first; this
+# workflow only has to produce what that commit installs.
 
 name: release
 

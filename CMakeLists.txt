@@ -1,5 +1,22 @@
 cmake_minimum_required(VERSION 3.25)
 
+# The python backend's engine is CPython from vcpkg - the `python` manifest
+# feature - so that nobody has to fetch it separately. It is asked for only when
+# that backend is configured, because building CPython costs minutes that a V8
+# or SpiderMonkey tree has no use for. This has to happen before `project()`,
+# which is when the vcpkg toolchain installs the manifest.
+#
+# The port itself is overlaid: see cmake/vcpkg-ports/README.md for the one
+# change, which is what makes vcpkg's static CPython linkable at all.
+if(UNIBIND_BACKEND STREQUAL "python")
+    if(NOT "python" IN_LIST VCPKG_MANIFEST_FEATURES)
+        list(APPEND VCPKG_MANIFEST_FEATURES "python")
+    endif()
+    if(NOT "${CMAKE_CURRENT_SOURCE_DIR}/cmake/vcpkg-ports" IN_LIST VCPKG_OVERLAY_PORTS)
+        list(APPEND VCPKG_OVERLAY_PORTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/vcpkg-ports")
+    endif()
+endif()
+
 # vcpkg toolchain, if the caller did not already set one. UNIBIND_VCPKG_ROOT may be
 # passed on the command line; otherwise VCPKG_ROOT from the environment is used.
 if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
@@ -23,8 +40,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # --------------------------------------------------------------------------
 # Options
 # --------------------------------------------------------------------------
-set(UNIBIND_BACKEND "v8" CACHE STRING "JavaScript engine to build against: v8 | spidermonkey")
-set_property(CACHE UNIBIND_BACKEND PROPERTY STRINGS v8 spidermonkey)
+set(UNIBIND_BACKEND "v8" CACHE STRING "Engine to build against: v8 | spidermonkey | python")
+set_property(CACHE UNIBIND_BACKEND PROPERTY STRINGS v8 spidermonkey python)
 
 # The engine. Left empty, the build fetches the version below into
 # dependencies/ and uses that; set either one and nothing is downloaded, which
@@ -33,6 +50,21 @@ set(UNIBIND_V8_DIR "" CACHE PATH
     "Prebuilt V8: a directory holding include/ and v8_monolith.lib. Empty: fetch UNIBIND_V8_VERSION")
 set(UNIBIND_SPIDERMONKEY_DIR "" CACHE PATH
     "Prebuilt SpiderMonkey: a directory holding include/ and spidermonkey.lib. Empty: fetch UNIBIND_SPIDERMONKEY_VERSION")
+set(UNIBIND_PYTHON_DIR "" CACHE PATH
+    "Static CPython in vcpkg's installed layout: include/python3.X/, lib/python3X.lib, debug/lib/python3X_d.lib, tools/python3/Lib/. Empty: vcpkg's python3 port for this triplet")
+
+# The python backend's pure-Python standard library. Embedded, it is compiled
+# into the backend library at build time by the prefix's own
+# tools/python3/python.exe, and a program needs nothing beside it at run time.
+# See docs/python.md, "Where the standard library comes from".
+option(UNIBIND_PYTHON_EMBED_STDLIB
+    "python backend: compile the pure-Python standard library into the backend, so a program ships as one executable" ON)
+set(UNIBIND_PYTHON_EMBED_STDLIB_EXCLUDE
+    "test;idlelib;tkinter;turtle;turtledemo;ensurepip;venv;lib2to3;pydoc_data" CACHE STRING
+    "python backend: dotted module names the embedded standard library leaves out, each with everything under it")
+set(UNIBIND_PYTHON_EMBED_STDLIB_OPTIMIZE "0" CACHE STRING
+    "python backend: compile()'s optimize for the embedded standard library - 0 keeps asserts and docstrings, as the interpreter itself runs; 2 drops both and is about 15% smaller")
+set_property(CACHE UNIBIND_PYTHON_EMBED_STDLIB_OPTIMIZE PROPERTY STRINGS 0 1 2)
 
 set(UNIBIND_V8_VERSION "15.6.8" CACHE STRING
     "Which published V8 build to fetch: the release tag is v8-<version>")
@@ -45,6 +77,7 @@ set_property(CACHE UNIBIND_ENGINE_FLAVOR PROPERTY STRINGS release debug)
 option(UNIBIND_FETCH_ENGINES "Fetch a published engine build when there is not one already" ON)
 
 option(UNIBIND_BUILD_TESTS "Build the test suite" ON)
+option(UNIBIND_BUILD_EXAMPLES "Build the examples that live in this tree (examples/python_repl, python backend only)" ON)
 option(UNIBIND_HANDLE_CHECKS_ENABLED "Diagnose use of a handle after its scope closed (costs 4 bytes per handle)" ON)
 option(UNIBIND_LTO "Link-time optimization, which is what inlines the backend into callers" OFF)
 
@@ -123,8 +156,8 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 # that question belongs. `UNIBIND_BACKEND` selects what this tree builds and
 # installs, and nothing else.
 # --------------------------------------------------------------------------
-if(NOT UNIBIND_BACKEND STREQUAL "v8" AND NOT UNIBIND_BACKEND STREQUAL "spidermonkey")
-    message(FATAL_ERROR "unibind: unknown UNIBIND_BACKEND '${UNIBIND_BACKEND}' (expected v8 or spidermonkey)")
+if(NOT UNIBIND_BACKEND MATCHES "^(v8|spidermonkey|python)$")
+    message(FATAL_ERROR "unibind: unknown UNIBIND_BACKEND '${UNIBIND_BACKEND}' (expected v8, spidermonkey or python)")
 endif()
 
 # One value for the whole build tree: it changes sizeof(Local<T>), so a
@@ -305,6 +338,13 @@ if(UNIBIND_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
+# examples/embed is built against an *installed* prefix and is not part of this
+# tree. The python REPL is: it needs the python backend and is registered as a
+# test of it (label "example").
+if(UNIBIND_BUILD_EXAMPLES AND UNIBIND_BACKEND STREQUAL "python")
+    add_subdirectory(examples/python_repl)
+endif()
+
 # --------------------------------------------------------------------------
 # Installing
 #
@@ -345,6 +385,10 @@ install(TARGETS unibind_backend_${UNIBIND_BACKEND}
 # a default and can be overridden - `UnibindV8Dir` in MSBuild, `UNIBIND_V8_DIR` in CMake
 # - because the prefix may be copied to a machine where the engine lives
 # somewhere else.
+set(UNIBIND_ENGINE_EXTRA_LIB_NAMES "")
+# Extra properties for this backend's MSBuild engine fragment. Only CPython has
+# any: its link inputs are more than one library, and differ by configuration.
+set(UNIBIND_MSBUILD_ENGINE_EXTRA "")
 if(UNIBIND_BACKEND STREQUAL "v8")
     set(UNIBIND_ENGINE_DIR "${UNIBIND_V8_DIR}")
     set(UNIBIND_ENGINE_LIB_NAME "v8_monolith.lib")
@@ -352,6 +396,30 @@ if(UNIBIND_BACKEND STREQUAL "v8")
     set(UNIBIND_ENGINE_SYSTEM_LIBS
         winmm dbghelp advapi32 shlwapi ws2_32 user32 kernel32
         ole32 oleaut32 psapi version ntdll userenv bcrypt)
+elseif(UNIBIND_BACKEND STREQUAL "python")
+    # A static /MT CPython from vcpkg, like the other two engines a static
+    # library. What it does need at run time is its standard library, the
+    # `Lib/` directory - see docs/python.md.
+    set(UNIBIND_ENGINE_DIR "${UNIBIND_PYTHON_DIR}")
+    set(UNIBIND_ENGINE_LIB_NAME "lib/${UNIBIND_PYTHON_LIB_NAME}")
+    set(UNIBIND_MSBUILD_ENGINE_DIR_PROP "UnibindPythonDir")
+    set(UNIBIND_ENGINE_SYSTEM_LIBS ${UNIBIND_PYTHON_SYSTEM_LIBS})
+    # The third-party libraries its built-in extension modules call (zlib,
+    # openssl, ...), from the same prefix - see _unibind_provide_python.
+    set(UNIBIND_ENGINE_EXTRA_LIB_NAMES ${UNIBIND_PYTHON_DEP_LIB_NAMES})
+    # For MSBuild: the engine's libraries relative to UnibindPythonDir, one list
+    # per CRT flavour - a Debug (/MTd) project links python3X_d.lib and the
+    # debug builds of its dependencies from debug/lib.
+    string(REPLACE ".lib" "_d.lib" unibindPythonDebugLib "debug/lib/${UNIBIND_PYTHON_LIB_NAME}")
+    set(unibindPythonRelease "lib/${UNIBIND_PYTHON_LIB_NAME}" ${UNIBIND_PYTHON_DEP_LIB_NAMES})
+    set(unibindPythonDebug "${unibindPythonDebugLib}" ${UNIBIND_PYTHON_DEP_DEBUG_LIB_NAMES})
+    list(JOIN unibindPythonRelease ";" unibindPythonRelease)
+    list(JOIN unibindPythonDebug ";" unibindPythonDebug)
+    string(REPLACE "/" "\\" unibindPythonRelease "${unibindPythonRelease}")
+    string(REPLACE "/" "\\" unibindPythonDebug "${unibindPythonDebug}")
+    string(CONCAT UNIBIND_MSBUILD_ENGINE_EXTRA
+        "    <UnibindPythonLibs Condition=\"'$(UnibindPythonLibs)' == ''\">${unibindPythonRelease}</UnibindPythonLibs>\n"
+        "    <UnibindPythonDebugLibs Condition=\"'$(UnibindPythonDebugLibs)' == ''\">${unibindPythonDebug}</UnibindPythonDebugLibs>")
 else()
     set(UNIBIND_ENGINE_DIR "${UNIBIND_SPIDERMONKEY_DIR}")
     set(UNIBIND_ENGINE_LIB_NAME "spidermonkey.lib")

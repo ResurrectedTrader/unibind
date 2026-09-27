@@ -1,0 +1,14 @@
+6 * 7
+_ + 1
+def fib(n):
+    return n if n < 2 else fib(n - 1) + fib(n - 2)
+
+[fib(i) for i in range(10)]
+1 / 0
+Counter(5).increment()
+host.env.mode
+greet = host.make_greeter("Hi")
+greet("REPL")
+:heap
+:quit
+never evaluated

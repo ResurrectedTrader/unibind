@@ -47,8 +47,10 @@ endif()
 file(GLOB backendDirs "${UNIBIND_SOURCE_DIR}/src/backends/*")
 set(backends "")
 foreach(dir IN LISTS backendDirs)
-    if(EXISTS "${dir}/CMakeLists.txt")
-        get_filename_component(name "${dir}" NAME)
+    get_filename_component(name "${dir}" NAME)
+    # The python backend's scripts are Python, so the JavaScript suite this
+    # compares means nothing to it; it has its own (tests/python).
+    if(EXISTS "${dir}/CMakeLists.txt" AND NOT name STREQUAL "python")
         list(APPEND backends "${name}")
     endif()
 endforeach()

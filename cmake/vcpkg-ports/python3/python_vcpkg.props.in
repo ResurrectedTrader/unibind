@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemDefinitionGroup>
+    <CLCompile>
+      <!-- Use vcpkg ports instead of vendored externals -->
+      <PreprocessorDefinitions>_Py_HAVE_ZLIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="${VCPKG_LIBRARY_LINKAGE} == 'static'">XML_STATIC;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>
+        %(AdditionalIncludeDirectories);${CURRENT_INSTALLED_DIR}/include
+      </AdditionalIncludeDirectories>
+    </CLCompile>
+    <Link>
+      <!-- Required Libs -->
+      <AdditionalDependencies Condition="'$(Configuration)'=='Release'">
+        ${ZLIB_RELEASE};%(AdditionalDependencies)
+      </AdditionalDependencies>
+      <AdditionalDependencies Condition="'$(Configuration)'=='Debug'">
+        ${ZLIB_DEBUG};%(AdditionalDependencies)
+      </AdditionalDependencies>
+
+      <!-- Extension modules -->
+      <AdditionalDependencies Condition="'$(Configuration)|$(IncludeExtensions)' == 'Release|true'">
+        ${BZ2_RELEASE};${EXPAT_RELEASE};${FFI_RELEASE};${LZMA_RELEASE};${MPDECIMAL_RELEASE};${ZSTD_RELEASE};${SQLITE_RELEASE};%(AdditionalDependencies)
+      </AdditionalDependencies>
+      <AdditionalDependencies Condition="'$(Configuration)|$(IncludeExtensions)' == 'Debug|true'">
+        ${BZ2_DEBUG};${EXPAT_DEBUG};${FFI_DEBUG};${LZMA_DEBUG};${MPDECIMAL_DEBUG};${ZSTD_DEBUG};${SQLITE_DEBUG};%(AdditionalDependencies)
+      </AdditionalDependencies>
+    </Link>
+
+    <Lib>
+      <!-- Required to prevent linker errors on Visual Studio 2017 with static CRT -->
+      <TargetMachine Condition="'${VCPKG_TARGET_ARCHITECTURE}'=='x86'">MachineX86</TargetMachine>
+      <TargetMachine Condition="'${VCPKG_TARGET_ARCHITECTURE}'=='x64'">MachineX64</TargetMachine>
+      <TargetMachine Condition="'${VCPKG_TARGET_ARCHITECTURE}'=='arm'">MachineARM</TargetMachine>
+      <!-- Required Libs -->
+      <AdditionalDependencies Condition="'$(Configuration)'=='Release'">
+        ${ZLIB_RELEASE};%(AdditionalDependencies)
+      </AdditionalDependencies>
+      <AdditionalDependencies Condition="'$(Configuration)'=='Debug'">
+        ${ZLIB_DEBUG};%(AdditionalDependencies)
+      </AdditionalDependencies>
+
+      <!-- Extension modules -->
+      <AdditionalDependencies Condition="'$(Configuration)|$(IncludeExtensions)' == 'Release|true'">
+        ${BZ2_RELEASE};${EXPAT_RELEASE};${FFI_RELEASE};${LZMA_RELEASE};${MPDECIMAL_RELEASE};${ZSTD_RELEASE};${SQLITE_RELEASE};%(AdditionalDependencies)
+      </AdditionalDependencies>
+      <AdditionalDependencies Condition="'$(Configuration)|$(IncludeExtensions)' == 'Debug|true'">
+        ${BZ2_DEBUG};${EXPAT_DEBUG};${FFI_DEBUG};${LZMA_DEBUG};${MPDECIMAL_DEBUG};${ZSTD_DEBUG};${SQLITE_DEBUG};%(AdditionalDependencies)
+      </AdditionalDependencies>
+    </Lib>
+  </ItemDefinitionGroup>
+
+  <!--
+    unibind: extension modules built into a static core.
+
+    The port rewrites each module listed in PYTHON_BUILTIN_EXTENSIONS from a DynamicLibrary to a
+    StaticLibrary; the conditions below recognise those projects by name (PCbuild has static
+    libraries of its own - pythoncore, and the vendored zlib-ng and liblzma, which the
+    devendoring patches take out of the build). This file is imported just before
+    Microsoft.Cpp.targets, so what it sets overrides the project's own settings.
+  -->
+  <PropertyGroup>
+    <_VcpkgPythonBuiltinModules>;${PYTHON_BUILTIN_EXTENSIONS};</_VcpkgPythonBuiltinModules>
+    <_VcpkgPythonListed>$(_VcpkgPythonBuiltinModules.Contains(';$(ProjectName);'))</_VcpkgPythonListed>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(ConfigurationType)' == 'StaticLibrary' and '$(_VcpkgPythonListed)' == 'true'">
+    <_VcpkgPythonBuiltinModule>true</_VcpkgPythonBuiltinModule>
+    <TargetExt>.lib</TargetExt>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(_VcpkgPythonBuiltinModule)' == 'true'">
+    <ClCompile>
+      <!-- Compiled as part of the core: PyMODINIT_FUNC is not dllexport, internal headers are available -->
+      <PreprocessorDefinitions>Py_BUILD_CORE_BUILTIN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Lib>
+      <!-- Only the module's own objects: its third-party and system libraries are the consumer's link inputs -->
+      <AdditionalDependencies></AdditionalDependencies>
+    </Lib>
+  </ItemDefinitionGroup>
+  <ItemGroup Condition="'$(_VcpkgPythonBuiltinModule)' == 'true'">
+    <!-- pythoncore depends on the module now, not the other way round -->
+    <ProjectReference Remove="pythoncore.vcxproj" />
+    <!-- _remote_debugging names the stable-ABI DLL too, which a static core does not have -->
+    <ProjectReference Remove="python3dll.vcxproj" />
+    <!-- The version resource belongs to a .pyd; the core has its own -->
+    <ResourceCompile Remove="@(ResourceCompile)" />
+  </ItemGroup>
+
+  <!-- pythoncore builds the modules first and merges their objects into python3X.lib -->
+  <PropertyGroup>
+    <_VcpkgPythonBuiltinProjects>${PYTHON_BUILTIN_PROJECTS}</_VcpkgPythonBuiltinProjects>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(ProjectName)|$(ConfigurationType)' == 'pythoncore|StaticLibrary'">
+    <ProjectReference Include="$(_VcpkgPythonBuiltinProjects)">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemGroup>
+  <ItemDefinitionGroup Condition="'$(ProjectName)|$(ConfigurationType)' == 'pythoncore|StaticLibrary'">
+    <Lib>
+      <!-- Replaces zlib above: third-party libraries are not merged into the core either -->
+      <AdditionalDependencies>${PYTHON_BUILTIN_LIBS}</AdditionalDependencies>
+    </Lib>
+  </ItemDefinitionGroup>
+
+  <!-- python.exe and pythonw.exe link the static core, so they need what the built-ins call -->
+  <ItemDefinitionGroup Condition="'$(ConfigurationType)' == 'Application'">
+    <Link>
+      <AdditionalDependencies>${PYTHON_BUILTIN_SYSTEM_LIBS};%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+</Project>

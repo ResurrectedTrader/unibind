@@ -180,6 +180,15 @@ endfunction()
 # The knob stays what it always was: set the variable and nothing is downloaded,
 # whatever is or is not under dependencies/.
 function(unibind_provide_engine engine)
+    if(engine STREQUAL "python")
+        _unibind_provide_python()
+        foreach(out UNIBIND_PYTHON_DIR UNIBIND_PYTHON_INCLUDE_DIR UNIBIND_PYTHON_LIB_NAME UNIBIND_PYTHON_LIBS
+                    UNIBIND_PYTHON_DEP_LIB_NAMES UNIBIND_PYTHON_DEP_DEBUG_LIB_NAMES
+                    UNIBIND_PYTHON_SYSTEM_LIBS UNIBIND_PYTHON_STDLIB UNIBIND_PYTHON_VERSION)
+            set(${out} "${${out}}" PARENT_SCOPE)
+        endforeach()
+        return()
+    endif()
     if(engine STREQUAL "v8")
         set(variable "UNIBIND_V8_DIR")
     else()
@@ -249,4 +258,142 @@ function(unibind_spidermonkey_definitions target)
     if(flavour STREQUAL "debug")
         target_compile_definitions(${target} PRIVATE DEBUG MOZ_DIAGNOSTIC_ASSERT_ENABLED)
     endif()
+endfunction()
+
+# ---------------------------------------------------------------------------
+# CPython
+#
+# The third engine is not a published archive: it is vcpkg's `python3` port,
+# pulled in through this repository's `python` manifest feature (the root
+# CMakeLists.txt turns that on for UNIBIND_BACKEND=python). On the
+# `*-windows-static` triplets the port builds CPython as a **static library
+# against the static CRT** - exactly the shape of the other two engines - so
+# there is nothing to download by hand and no DLL to deploy.
+#
+# A static CPython on Windows cannot load C extension modules: every `.pyd`
+# links `python3X.dll`, which does not exist here. So the overlay port in
+# cmake/vcpkg-ports/python3 compiles the standard library's extension modules
+# into the static library as built-in modules instead - `_socket`, `select`,
+# `_asyncio`, `_overlapped` and the rest; cmake/vcpkg-ports/README.md has the
+# list - and nothing ever looks for a `.pyd`.
+#
+# The pure-Python half of the standard library, `tools/python3/Lib`, is compiled
+# into the backend (`UNIBIND_PYTHON_EMBED_STDLIB`, on by default), so a program
+# needs nothing of it at run time. `UNIBIND_PYTHON_STDLIB` records where it is:
+# the source of the embedded copy, and - built with embedding off - the default
+# the backend reads from disk. See docs/python.md, "Where the standard library
+# comes from".
+#
+# UNIBIND_PYTHON_DIR, when set, points at another prefix with the same layout
+# (include/python3.X/, lib/, debug/lib/, tools/python3/Lib/), and vcpkg is not
+# consulted.
+# ---------------------------------------------------------------------------
+function(_unibind_provide_python)
+    set(prefix "${UNIBIND_PYTHON_DIR}")
+    if(NOT prefix)
+        if(NOT DEFINED VCPKG_INSTALLED_DIR OR NOT DEFINED VCPKG_TARGET_TRIPLET)
+            message(FATAL_ERROR
+                "unibind: the python backend takes CPython from vcpkg, and this configure has no vcpkg toolchain. "
+                "Set UNIBIND_VCPKG_ROOT (or VCPKG_ROOT), or point -DUNIBIND_PYTHON_DIR=<prefix> at a static CPython.")
+        endif()
+        if(NOT VCPKG_TARGET_TRIPLET MATCHES "-static$")
+            message(FATAL_ERROR
+                "unibind: VCPKG_TARGET_TRIPLET is '${VCPKG_TARGET_TRIPLET}'. The python backend needs the static-CRT "
+                "CPython the *-windows-static triplets build; the presets set x86-windows-static / x64-windows-static.")
+        endif()
+        set(prefix "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}")
+    endif()
+
+    file(GLOB includeDirs LIST_DIRECTORIES true "${prefix}/include/python3.*")
+    list(FILTER includeDirs INCLUDE REGEX "/python3\.[0-9]+$")
+    if(NOT includeDirs)
+        message(FATAL_ERROR "unibind: no include/python3.X under '${prefix}'. Is vcpkg's python feature installed?")
+    endif()
+    list(GET includeDirs 0 includeDir)
+    string(REGEX MATCH "python(3)\.([0-9]+)$" _ "${includeDir}")
+    set(version "${CMAKE_MATCH_1}.${CMAKE_MATCH_2}")
+    set(tag "${CMAKE_MATCH_1}${CMAKE_MATCH_2}")
+
+    set(release "${prefix}/lib/python${tag}.lib")
+    set(debug "${prefix}/debug/lib/python${tag}_d.lib")
+    if(NOT EXISTS "${release}")
+        message(FATAL_ERROR "unibind: no lib/python${tag}.lib under '${prefix}'")
+    endif()
+    set(stdlib "${prefix}/tools/python3/Lib")
+    if(NOT EXISTS "${stdlib}/os.py")
+        message(FATAL_ERROR "unibind: no standard library at '${stdlib}'")
+    endif()
+
+    # The static library holds CPython and the extension modules the overlay port
+    # builds into it (cmake/vcpkg-ports/README.md), and nothing else: the
+    # third-party libraries those modules call are vcpkg's own static libraries
+    # for the same triplet, linked beside it. Each is a pair - the release name
+    # in lib/ and the debug name in debug/lib/ - and one that this prefix does
+    # not have is left out (a CPython built without the module that needs it
+    # does not need it either).
+    set(libs "")
+    set(depNames "")
+    set(depDebugNames "")
+    if(EXISTS "${debug}")
+        list(APPEND libs "$<$<CONFIG:Debug>:${debug}>" "$<$<NOT:$<CONFIG:Debug>>:${release}>")
+    else()
+        list(APPEND libs "${release}")
+    endif()
+    foreach(dep IN ITEMS
+            "zlib|zs zlib z|zsd zlibd zd"
+            "openssl-ssl|libssl|libssl"
+            "openssl-crypto|libcrypto|libcrypto"
+            "libffi|ffi libffi|ffi libffi"
+            "sqlite3|sqlite3|sqlite3"
+            "expat|libexpatMT libexpat|libexpatdMT libexpatd"
+            "liblzma|lzma|lzma"
+            "bzip2|bz2|bz2d"
+            "mpdecimal|libmpdec|libmpdec"
+            "zstd|zstd|zstdd zstd")
+        string(REPLACE "|" ";" dep "${dep}")
+        list(GET dep 0 depName)
+        list(GET dep 1 relNames)
+        list(GET dep 2 dbgNames)
+        string(REPLACE " " ";" relNames "${relNames}")
+        string(REPLACE " " ";" dbgNames "${dbgNames}")
+        unset(depRelease)
+        unset(depDebug)
+        find_library(depRelease NAMES ${relNames} PATHS "${prefix}/lib" NO_DEFAULT_PATH NO_CACHE)
+        find_library(depDebug NAMES ${dbgNames} PATHS "${prefix}/debug/lib" NO_DEFAULT_PATH NO_CACHE)
+        if(depRelease AND depDebug)
+            list(APPEND libs "$<$<CONFIG:Debug>:${depDebug}>" "$<$<NOT:$<CONFIG:Debug>>:${depRelease}>")
+        elseif(depRelease)
+            list(APPEND libs "${depRelease}")
+        else()
+            continue()
+        endif()
+        file(RELATIVE_PATH depRel "${prefix}" "${depRelease}")
+        list(APPEND depNames "${depRel}")
+        if(depDebug)
+            file(RELATIVE_PATH depRel "${prefix}" "${depDebug}")
+        endif()
+        list(APPEND depDebugNames "${depRel}")
+    endforeach()
+
+    set(UNIBIND_PYTHON_DIR "${prefix}" PARENT_SCOPE)
+    set(UNIBIND_PYTHON_INCLUDE_DIR "${includeDir}" PARENT_SCOPE)
+    set(UNIBIND_PYTHON_LIB_NAME "python${tag}.lib" PARENT_SCOPE)
+    set(UNIBIND_PYTHON_LIBS "${libs}" PARENT_SCOPE)
+    # The engine's other link inputs, relative to the prefix, release flavour -
+    # what the install tree's package files name beside python3X.lib.
+    set(UNIBIND_PYTHON_DEP_LIB_NAMES "${depNames}" PARENT_SCOPE)
+    # The same, debug flavour: what a Debug (/MTd) consumer links instead.
+    set(UNIBIND_PYTHON_DEP_DEBUG_LIB_NAMES "${depDebugNames}" PARENT_SCOPE)
+    # What the core, its built-in modules and openssl call in Windows itself:
+    #   version shlwapi pathcch bcrypt advapi32 user32 kernel32 ole32 oleaut32 - the core
+    #   ws2_32 - _socket, select, _overlapped, _multiprocessing, _ssl, openssl
+    #   iphlpapi - _socket          rpcrt4 - _socket, _uuid
+    #   crypt32 - _ssl, openssl     winmm - winsound
+    #   wbemuuid propsys - _wmi
+    set(UNIBIND_PYTHON_SYSTEM_LIBS
+        version ws2_32 shlwapi pathcch bcrypt advapi32 user32 kernel32 ole32 oleaut32
+        iphlpapi rpcrt4 crypt32 winmm wbemuuid propsys PARENT_SCOPE)
+    set(UNIBIND_PYTHON_STDLIB "${stdlib}" PARENT_SCOPE)
+    set(UNIBIND_PYTHON_VERSION "${version}" PARENT_SCOPE)
+    message(STATUS "unibind: CPython ${version} (static, /MT) at ${prefix}")
 endfunction()

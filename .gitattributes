@@ -10,3 +10,7 @@
 *.lib binary
 *.zip binary
 *.png binary
+
+# vcpkg port patches are applied byte for byte against upstream sources, some of
+# which are CRLF (CPython's PCbuild). Normalising them would stop them applying.
+cmake/vcpkg-ports/**/*.patch -text

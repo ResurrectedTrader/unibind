@@ -5,6 +5,27 @@
 find_package(doctest CONFIG REQUIRED)
 
 # ---------------------------------------------------------------------------
+# The benchmark
+#
+# The one program here every backend builds: its workloads are C++ against
+# `ub::` and, for the script side, a JavaScript and a Python source for each,
+# chosen at run time by `Platform::BackendName()`. Labelled `benchmark`, which
+# CI does not run; `--quick` only checks that every workload runs and answers.
+# `tests/bench/Compare.cmake` runs it on all three and merges the tables.
+# ---------------------------------------------------------------------------
+add_executable(unibind_bench bench/bench_main.cpp)
+target_link_libraries(unibind_bench PRIVATE unibind::unibind)
+add_test(NAME ${UNIBIND_BACKEND}.benchmark COMMAND unibind_bench --quick)
+set_tests_properties(${UNIBIND_BACKEND}.benchmark PROPERTIES TIMEOUT 300 LABELS "benchmark")
+
+# The python backend runs Python, not JavaScript, so this suite - and the parity
+# comparison built on it - does not apply to it. It has a suite of its own.
+if(UNIBIND_BACKEND STREQUAL "python")
+    add_subdirectory(python)
+    return()
+endif()
+
+# ---------------------------------------------------------------------------
 # What this backend can answer
 #
 # An operation a backend declares but does not define is a link error at the
@@ -110,12 +131,13 @@ if(unibindEngineOwnsOperators)
 endif()
 
 # ---------------------------------------------------------------------------
-# The benchmark
+# The benchmark's V8 baseline
+#
+# The target is made at the top of this file, where every backend builds it. On
+# V8 it also times each operation against V8 directly, for the ratio between
+# the two - which needs V8's headers, and the same allocator arrangement as the
+# suite when the engine brings its own operators.
 # ---------------------------------------------------------------------------
-add_executable(unibind_bench bench/bench_main.cpp)
-target_link_libraries(unibind_bench PRIVATE unibind::unibind)
-# On V8, the benchmark also times each operation against V8 directly, for the
-# ratio between the two.
 if(UNIBIND_BACKEND STREQUAL "v8")
     target_include_directories(unibind_bench SYSTEM PRIVATE "${UNIBIND_V8_DIR}/include")
     target_compile_definitions(unibind_bench PRIVATE UNIBIND_BENCH_V8_BASELINE V8_GN_HEADER NOMINMAX WIN32_LEAN_AND_MEAN)
@@ -208,9 +230,6 @@ set_tests_properties(${UNIBIND_BACKEND}.platform-is-the-gate-on-an-isolate PROPE
 add_test(NAME ${UNIBIND_BACKEND}.worker-threads-belong-to-one-platform
          COMMAND unibind_tests --unibind-worker-threads-belong-to-one-platform)
 set_tests_properties(${UNIBIND_BACKEND}.worker-threads-belong-to-one-platform PROPERTIES TIMEOUT 120 LABELS "suite")
-
-add_test(NAME ${UNIBIND_BACKEND}.benchmark COMMAND unibind_bench --scale 10)
-set_tests_properties(${UNIBIND_BACKEND}.benchmark PROPERTIES TIMEOUT 300 LABELS "benchmark")
 
 # docs/lifetimes.md section 9: a checked build diagnoses a handle used after its
 # frame closed. Diagnosing it means dying, so it runs in a process of its own

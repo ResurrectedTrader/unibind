@@ -1,0 +1,179 @@
+"""Freeze the pure-Python standard library into the CPython backend.
+
+Run by the build (src/backends/python/CMakeLists.txt) with the *target*
+CPython - the `tools/python3/python.exe` beside the static library, which is the
+same version and so writes the bytecode and the marshal format that library
+reads. It compiles every module under `Lib` that is not excluded and writes:
+
+  * a binary blob: every module's code object, `marshal.dumps`-ed, end to end;
+  * a C++ source that `#embed`s the blob and indexes it - one entry per module,
+    its name, where its code is in the blob, and whether it is a package.
+
+The backend turns that index into CPython's own frozen-module table
+(`PyImport_FrozenModules`) before the interpreter starts; see
+docs/python.md, "Where the standard library comes from".
+
+Nothing here names a CPython version: the version, the bytecode magic and the
+set of modules all come from the interpreter that runs this and the `Lib` it
+is given.
+"""
+
+import argparse
+import marshal
+import os
+import sys
+
+
+def module_names(lib, excluded):
+    """(module name, path, is_package) for every module under `lib`, sorted.
+
+    `excluded` holds dotted module names; a module is left out when its name
+    is one of them or starts with one and a dot. A directory that is not a
+    valid package name (`site-packages`, `__pycache__`) is never walked, and a
+    directory without an `__init__.py` - a namespace package - is not either:
+    there is nothing to freeze for its own name, and CPython's frozen importer
+    has no notion of one.
+    """
+
+    def is_excluded(name):
+        return any(name == e or name.startswith(e + ".") for e in excluded)
+
+    found = []
+
+    def walk(directory, prefix):
+        for entry in sorted(os.listdir(directory)):
+            path = os.path.join(directory, entry)
+            if os.path.isdir(path):
+                if not entry.isidentifier():
+                    continue
+                name = prefix + entry
+                if is_excluded(name):
+                    continue
+                init = os.path.join(path, "__init__.py")
+                if not os.path.isfile(init):
+                    continue
+                found.append((name, init, True))
+                walk(path, name + ".")
+            elif entry.endswith(".py") and entry != "__init__.py":
+                stem = entry[:-3]
+                if not stem.isidentifier():
+                    continue
+                name = prefix + stem
+                if not is_excluded(name):
+                    found.append((name, path, False))
+
+    walk(lib, "")
+    found.sort()
+    return found
+
+
+def write(path, data):
+    with open(path, "wb") as f:
+        f.write(data)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--lib", required=True, help="the standard library directory (Lib)")
+    parser.add_argument("--blob", required=True, help="the marshalled code, end to end")
+    parser.add_argument("--source", required=True, help="the C++ source that embeds and indexes it")
+    parser.add_argument("--exclude", default="", help="';'-separated dotted module names to leave out")
+    parser.add_argument("--optimize", type=int, default=0, help="compile()'s optimize: 0, 1 or 2")
+    parser.add_argument("--expect-version", default="", help="X.Y the library being built against is")
+    args = parser.parse_args()
+
+    version = "%d.%d" % sys.version_info[:2]
+    if args.expect_version and args.expect_version != version:
+        sys.exit("freeze_stdlib: this is CPython %s, and the library is %s: the bytecode would not load"
+                 % (version, args.expect_version))
+
+    excluded = [e.strip() for e in args.exclude.replace(",", ";").split(";") if e.strip()]
+    modules = module_names(args.lib, excluded)
+    if not any(name == "os" for name, _, _ in modules):
+        sys.exit("freeze_stdlib: no os.py under %s" % args.lib)
+
+    blob = bytearray()
+    entries = []
+    failed = []
+    for name, path, is_package in modules:
+        with open(path, "rb") as f:
+            source = f.read()
+        try:
+            # The file name is CPython's own for a frozen module: a traceback
+            # shows `File "<frozen json.decoder>", line 353`, which says where
+            # the code is and that there is no file to open.
+            code = compile(source, "<frozen %s>" % name, "exec", dont_inherit=True, optimize=args.optimize)
+        except SyntaxError as e:
+            failed.append("%s (%s): %s" % (name, path, e))
+            continue
+        data = marshal.dumps(code)
+        entries.append((name, len(blob), len(data), is_package))
+        blob += data
+    if failed:
+        sys.exit("freeze_stdlib: these do not compile; exclude them (UNIBIND_PYTHON_EMBED_STDLIB_EXCLUDE):\n  "
+                 + "\n  ".join(failed))
+
+    blob_name = os.path.basename(args.blob)
+    lines = [
+        "// Generated by src/backends/python/freeze_stdlib.py: do not edit.",
+        "//",
+        "// CPython %s's standard library, %d modules compiled at optimize=%d:"
+        % (sys.version.split()[0], len(entries), args.optimize),
+        "// %d bytes of marshalled code, #embed-ed from %s." % (len(blob), blob_name),
+        "",
+        "#include <Python.h>",
+        "",
+        '#include "stdlib_frozen.h"',
+        "",
+        "// The code is only as good as the bytecode it was compiled to, and that",
+        "// changes with every X.Y.",
+        "static_assert(PY_MAJOR_VERSION == %d && PY_MINOR_VERSION == %d," % sys.version_info[:2],
+        '              "the embedded standard library was compiled by CPython %s, and this is not it");' % version,
+        "",
+        "// `#embed` is C23, and an extension in C++. clang 19 also hands each byte",
+        "// to C++ as a plain (signed) `char`, so one over 127 is a narrowing",
+        "// conversion into the `unsigned char` array; the value it converts to is",
+        "// the byte, which is what is wanted.",
+        "#if defined(__clang__)",
+        "#pragma clang diagnostic push",
+        '#pragma clang diagnostic ignored "-Wc23-extensions"',
+        '#pragma clang diagnostic ignored "-Wc++11-narrowing"',
+        "#endif",
+        "",
+        "namespace ub::detail::frozen_stdlib {",
+        "namespace {",
+        "",
+        "alignas(16) const unsigned char kCode[] = {",
+        '#embed "%s"' % blob_name,
+        "};",
+        "",
+        "// CPython's own frozen-module table, ended by an entry with no name.",
+        "constexpr _frozen kModules[] = {",
+    ]
+    for name, offset, size, is_package in entries:
+        lines.append('    {.name = "%s", .code = kCode + %d, .size = %d, .is_package = %d},'
+                     % (name, offset, size, 1 if is_package else 0))
+    lines += [
+        "    {},",
+        "};",
+        "",
+        "}  // namespace",
+        "",
+        "const Table kTable{kModules, sizeof(kModules) / sizeof(kModules[0]) - 1, sizeof(kCode)};",
+        "",
+        "}  // namespace ub::detail::frozen_stdlib",
+        "",
+        "#if defined(__clang__)",
+        "#pragma clang diagnostic pop",
+        "#endif",
+        "",
+    ]
+    os.makedirs(os.path.dirname(os.path.abspath(args.blob)), exist_ok=True)
+    write(args.blob, bytes(blob))
+    write(args.source, "\n".join(lines).encode("utf-8"))
+    print("freeze_stdlib: CPython %s, %d modules, %d bytes (excluded: %s)"
+          % (version, len(entries), len(blob), ", ".join(excluded) or "nothing"))
+
+
+if __name__ == "__main__":
+    main()

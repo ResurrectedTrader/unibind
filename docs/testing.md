@@ -4,6 +4,11 @@ How the suite is built and run is in [`tests/README.md`](../tests/README.md).
 This file is the other half: the places where the two engines do not agree, and
 what the suite asserts instead.
 
+That suite is the JavaScript backends'. The CPython backend runs Python, so it
+has a suite of its own, and [the last section](#the-cpython-backends-suite) is
+its account: why parity does not apply to it, what it covers, and what it does
+not.
+
 One rule governs the whole of it: **where the engines genuinely differ, the test
 asserts the shape and the difference is written down here.** A test that
 branches on `Platform::BackendName()` would be a bug, so none does - a
@@ -20,8 +25,10 @@ to read it *with* until you make one.
 
 **The Visual Studio generator writes no `compile_commands.json`**, so clang-tidy
 has no idea what defines, include paths and standard a file is compiled with -
-and an engine header without its defines does not even parse. The `tidy-v8` and
-`tidy-spidermonkey` presets exist for that and nothing else: Ninja, the same
+and an engine header without its defines does not even parse. The `tidy-v8`,
+`tidy-spidermonkey` and `tidy-python` presets exist for that and nothing else
+(the last builds CPython through vcpkg on its first configure, as the `python`
+presets do): Ninja, the same
 ClangCL toolchain, the same flags, and nothing linked. They are x64, because
 Ninja has no `-A` and clang-cl targets the host; nothing clang-tidy reports
 depends on the architecture.
@@ -128,10 +135,11 @@ pointing inside SpiderMonkey's own crash macro.
 - **A `Context`, `Script` or `Global<T>` outliving its isolate**, in Release,
   for the same reason and with the same shape of test in a checked build. See
   decision 27.
-- **A refcounted third backend.** `docs/lifetimes.md` section 12 describes one;
-  nothing here is written against it, though nothing assumes a tracing collector
-  either except the finalizer timing case, which already reports rather than
-  asserts.
+- **A refcounted backend.** There is one now - CPython - and this suite does not
+  run on it, because its scripts are JavaScript. Nothing here assumes a tracing
+  collector except the finalizer timing case, which already reports rather than
+  asserts; `tests/python/` pins the refcounted behaviour itself (the last
+  section).
 - **A template cache that stored one half of a pair.** SpiderMonkey materialises
   a template into a realm as a constructor and a prototype, cached together; if
   the second store failed the first would still hit, and every later instance in
@@ -886,3 +894,82 @@ That is the technique, not just the case: for anything the engine is trusted to
 validate, assert on what *ran*. `code cache: a blob for other source is declined
 rather than believed` and `code cache: a blob is keyed to its origin as well as
 its source` both do, and the second reads the origin back out of a stack.
+
+## The CPython backend's suite
+
+`tests/python/` is the CPython backend's suite, and
+[`tests/python/README.md`](../tests/python/README.md) is how to build and run it.
+This is the account of what it asserts.
+
+### Why parity does not apply
+
+The shared suite is JavaScript source as much as C++: nearly every case hands a
+script to `Evaluate` and reads back what it did. On a backend whose scripts are
+Python those cases are syntax errors, and translating them would give a second
+suite that only *looked* like the first - the case names would match and the
+scripts would not, so a parity row would compare two different tests and call
+them one. So the parity comparison leaves this backend out
+(`tests/cmake/RunParity.cmake` skips it by name), `tests/CMakeLists.txt` builds
+`tests/python/` instead when `UNIBIND_BACKEND=python`, and nothing pretends the
+two suites are one.
+
+What carries over is the discipline, unchanged: C++ against `ub::` only, no
+CPython header and no CPython type anywhere in a case, and a case written against
+what a header promises stays red rather than weakened. The difference is that a
+case here may assert Python's behaviour - that a missing attribute is an
+`AttributeError`, that `len()` of an object counts its keys - because those are
+decisions this backend made (`docs/status.md` decisions 30-37) rather than
+differences between engines to be written around.
+
+### What it covers
+
+271 cases, about 120700 assertions in a Release x64 run, and one stress case
+that runs only when asked for (`-tc="stress:*" --no-skip`): it makes and
+destroys a thousand isolates and prints the process's memory as it goes, which
+must level off rather than climb. The
+suite links `tests/support/allocations.cpp`, the shared suite's replacement of
+the global allocation operators, so that the lifetime cases can count the
+backend's own C++ heap exactly and make its allocations fail on purpose.
+
+| area | file | notes |
+|---|---|---|
+| bring-up and scripts | `smoke_test.cpp` | the backend's name and version, a trailing expression as the completion value, statements before it running in the realm's globals, a script with none being `undefined`, a throw caught with its message |
+| objects | `objects_test.cpp` | `unibind.Object` from both sides: one property whatever spells its key, a missing property `undefined` to C++ and an error to Python, `in` along the chain, delete, key order and filters, attributes from Python (strict) and from C++ (sloppy), an inherited read-only property refusing a shadowing write, accessors (This and Holder, a throw, a repr that does not run them), prototypes and their cycles, construction and iteration as a mapping, symbols and the protocol a well-known one names, Python subclasses and their descriptors, weak references and cycles; and the other shapes - a list grown by index with `None` holes and capped at 2^26, a tuple read-only, a dict as its items (the realm's globals among them), any other object as its attributes, and `dir` |
+| functions | `functions_test.cpp` | borrowed arguments, every `ReturnValue` setter reaching Python as the value it names (an integral `double` as an `int`), `This()` as the receiver or the realm's globals, typed data, callable and not a constructor, calling and constructing what script wrote, a native throw caught in script, a C++ exception stopped at the boundary, nested handlers each owning its depth, a script value as data and its lifetime, a realm found after its `Context` was released, a function freed with its last reference |
+| templates | `templates_test.cpp` | constants and `ReadOnly`, methods, accessors and inherited ones, nesting, one type per realm, statics on the type (and `ReadOnly`/`DontDelete` holding there), a callback's `IsConstructCall`, the plain call from C++, a constructor answering with an object, `HasInstance`, `Inherit` chaining prototypes and types, the sealed shape, a JavaScript-style iterator iterated from Python, a Python subclass constructing through the template |
+| interceptors | `interceptors_test.cpp` | named and indexed hooks, declining, query/delete/enumerate, the two halves kept apart, a getter alone as a whole handler, a setter's discarded return, an enumerator with nothing to say, This and Holder, a throw that intercepts, dunder lookups kept away from a catch-all, a symbol key |
+| classes | `classes_test.cpp` | construction with native state, the type with statics and a prototype, the plain call refused unless opted in, a class that can only be wrapped, a constructor that throws or declines, instance-template accessors, a Python subclass keeping and overriding methods (and `super()`), checked unwrapping and a wrong receiver, a prototype swap fooling nothing, several realms, an interceptor over every instance, `Symbol.iterator`, and ownership: a share handed back, the native going with the last reference exactly once, a cycle collected, survivors given back by `~Isolate`, the no-op deleter, a share outliving the isolate |
+| termination, interrupts, jobs | `runtime_test.cpp` | a tight loop stopped from another thread, and every way a script might swallow the stop - `except BaseException`, a `finally` with its own loop and its other lines, nested calls, recursion, a generator, a builtin in an `except` - plus a stop remembered while idle, landing in the compiler, repeated, cancelled with nothing run; interrupts in order, from a callback, waiting out a stop, sampling before a stop, their throws cleared, many from many threads; posted and delayed work in every order the contract names |
+| heap, stack, concurrency, lifetime | `runtime_test.cpp` | statistics that follow what a script allocates, a limit reported as the limit, `MemoryError` and a fault at the limit, the rescue callback, a declining one asked once per crossing, a limit belonging to its isolate; recursion on threads of several sizes - through `sorted(key=...)` too - `stackLimitBytes` held to the thread's stack, native recursion and recursion through native and Python as `RecursionError`; isolates on several threads stopping, pumping and allocating at once, and running in parallel; teardown with work queued, while stopped, and racing a stop; and many isolates leaking nothing of the backend's own, and the process keeping next to nothing of an ended isolate |
+| natives and stops | `runtime_test.cpp` | a native stopping its own isolate, a native polling `IsExecutionTerminating` and the script stopping when it returns, a native called from a stopped script's `finally` not running, a stopped isolate refusing a native's call back into Python |
+| promises | `promises_test.cpp` | asyncio in an isolate and the isolate's loop being current, a native promise made, settled once and read, rejections with and without an exception, continuations waiting for the pump, top-level `await`, script awaiting a native promise, rejection through a chain, following another promise, resolving with itself, futures and tasks as promises, continuations queued by continuations, a timer not due, a job settling one before the next job, stops in a continuation and while stopped, a stopped isolate refusing, teardown with tasks pending, isolates on several threads |
+| binary data | `binary_test.cpp` | buffers copied and zero-filled, a buffer too large to allocate, `bytearray` and `bytes` as buffers, every element type both ways and every conversion at its boundaries, views that do not fit refused, views sharing a buffer, the script-side `TypedArray` and `DataView`, a buffer shrunk under a view, a conversion that shrinks it mid-write, an export pinning its size, a view keeping its buffer alive |
+| structured clone | `serialization_test.cpp` | every primitive exactly, NaN and `-0` to the bit, a lone surrogate, containers and their keys, shared references and cycles, views sharing their buffer, what cannot be cloned failing the whole call, a plain object, blobs crossing isolates and threads, damaged and well-framed-but-foreign blobs refused, deep nesting on the heap, a graph owing nothing to the realm that wrote it |
+| code cache | `codecache_test.cpp` | the build id, a round trip, scripts with and without a tail, no blob and bad blobs compiling the source, a blob for other source, a payload re-framed for other source, tracebacks from a cached script, a blob used in another isolate on another thread, top-level `await`, a script outliving its realm, a syntax error beside a foreign blob |
+| the embedded standard library | `stdlib_embedded_test.cpp` | modules served by CPython's `FrozenImporter` with `sys.path` empty and no module having a file, packages with an empty `__path__`, what the build left out absent; `asyncio`, `json`, `re`, `ssl`, `sqlite3`, `decimal`, `collections`, `dataclasses`, `typing`, `pathlib` and `email` each doing something; isolates on six threads unmarshalling the one table at once; a traceback into it naming `<frozen json.decoder>` and the line; isolate start-up time, measured. Every case asks which standard library the run should see and checks that one, and CTest runs them twice more out of process: from a copy of the suite alone in an empty directory, and with `UNIBIND_PYTHON_HOME` set, which must win |
+| the standard library | `stdlib_test.cpp` | every extension module built in and none loaded from a `.pyd`; the three modules that refuse an isolate refusing cleanly, and `ctypes`, `decimal`, `datetime`, `zoneinfo` and XML on their C modules, in two isolates at once too; `ssl`/`hashlib`, default SSL contexts from eight isolates on eight threads, `sqlite3`, the four compressors, `socket`/`select`, `unicodedata`, `queue`, `uuid`, `zoneinfo`, `multiprocessing`, `winsound`; `asyncio.run`, a TCP echo over streams, and event loops in two isolates at once |
+| handles, roots and realms | `lifetimes_test.cpp` | every handle one reference given back when its scope closes, ten thousand in one frame, escapes through frames, a handle as the only owner; frame and root exhaustion yielding empty handles with `MemoryError` and nothing leaked; `Global`s moved, duplicated, compared with no scope open, and reset; a realm surviving script that empties its globals four ways, and a copied globals dict confusing no later realm; a released realm brought back whole by a callback; `Context` reference counting, nested `ContextScope`s; ten thousand realms and many scripts leaving the C++ heap where it was; templates going with their realm; a `bytearray` too large to allocate refused without the `SystemError` CPython (3.12, and still 3.14) would print |
+| natives and their calls | `lifetimes_natives_test.cpp` | a native in a cycle through containers and closures, one resurrected by `__del__`, one whose destructor gives back its own realm and root, destructors at teardown that run script reaching other natives or make new ones, one shared native in two isolates on two threads, an instance dying on a script's thread (given back on the isolate's), a receiver dropped by script mid-call or kept in a `Global`, a throw after building values, fifty levels of native into Python into native (ten against a debug CPython), interceptor hooks that let go of their object |
+| teardown and threads | `teardown_test.cpp` | a second isolate refused and then allowed, isolates in sequence and on many threads giving back all they took (nothing kept per isolate), ten thousand rounds of churn in one isolate; a `threading.Thread` and raw `_thread` threads stopped quietly at teardown, a short blocking call waited for and a long one left behind with the isolate's thread free at once, `TerminateExecution` reaching a script's thread while an interrupt waits for the isolate's; stops inside a native holding handles, a class constructor, a destructor during collection and an asyncio task; the isolate's loop current again after `asyncio.run`, and `asyncio.run` refused inside top-level `await` |
+
+### What it does not cover
+
+- **The coercions.** `ToBoolean`, `ToString`, `ToNumber`, `ToInt32`,
+  `LooseEquals`, `StrictEquals` and `SameValue` are decision 32's, and no case
+  asserts them directly: they are exercised only where another case coerces an
+  argument. Python's truthiness in `ToBoolean` and `str()` in `ToString` are the
+  two a case should pin first.
+- **`Symbol.asyncIterator` and `Symbol.hasInstance`.** Stored under their Python
+  protocol names; what Python does with them on an instance - nothing - is not
+  asserted (`docs/python.md` section 2).
+- **A bring-up that fails.** A `Platform` is made once per process, before the
+  suite, so a missing standard library cannot be provoked in it - and with the
+  standard library embedded there is none to miss.
+
+### No case name has a `;`
+
+`doctest_discover_tests` registers each case with CTest by name, and CMake
+splits a name at `;` - the case becomes two CTest tests whose `--test-case`
+filter matches nothing, and a filter that matches nothing passes. Two cases in
+`runtime_test.cpp` had one and so never ran under `ctest`; they have been
+renamed. `docs/gotchas.md` has the rule.

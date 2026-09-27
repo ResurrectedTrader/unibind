@@ -1,0 +1,27 @@
+diff --git a/Lib/asyncio/proactor_events.py b/Lib/asyncio/proactor_events.py
+index 3cd8cea..3132b98 100644
+--- a/Lib/asyncio/proactor_events.py
++++ b/Lib/asyncio/proactor_events.py
+@@ -633,8 +633,11 @@ def __init__(self, proactor):
+         self._accept_futures = {}   # socket file descriptor => Future
+         proactor.set_loop(self)
+         self._make_self_pipe()
+-        if threading.current_thread() is threading.main_thread():
++        if (threading.current_thread() is threading.main_thread()
++                and threading._is_main_interpreter()):
+             # wakeup fd can only be installed to a file descriptor from the main thread
++            # of the main interpreter (a sub-interpreter's first thread is its own
++            # "main thread", but signals are never delivered to it)
+             signal.set_wakeup_fd(self._csock.fileno())
+ 
+     def _make_socket_transport(self, sock, protocol, waiter=None,
+@@ -683,7 +686,8 @@ def close(self):
+         if self.is_closed():
+             return
+ 
+-        if threading.current_thread() is threading.main_thread():
++        if (threading.current_thread() is threading.main_thread()
++                and threading._is_main_interpreter()):
+             signal.set_wakeup_fd(-1)
+         # Call these methods before closing the event loop (before calling
+         # BaseEventLoop.close), because they can schedule callbacks with

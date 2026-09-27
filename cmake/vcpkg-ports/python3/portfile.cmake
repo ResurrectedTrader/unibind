@@ -1,0 +1,523 @@
+if(VCPKG_TARGET_IS_ANDROID)
+    vcpkg_check_linkage(ONLY_DYNAMIC_LIBRARY)
+endif()
+
+if(VCPKG_LIBRARY_LINKAGE STREQUAL "dynamic" AND VCPKG_CRT_LINKAGE STREQUAL "static")
+    message(STATUS "Warning: Dynamic library with static CRT is not supported. Building static library.")
+    set(VCPKG_LIBRARY_LINKAGE static)
+endif()
+
+if("extensions" IN_LIST FEATURES)
+    if(VCPKG_TARGET_IS_WINDOWS)
+        vcpkg_check_linkage(ONLY_DYNAMIC_LIBRARY)
+    endif()
+    set(PYTHON_HAS_EXTENSIONS ON)
+else()
+    set(PYTHON_HAS_EXTENSIONS OFF)
+endif()
+
+string(REGEX MATCH "^([0-9]+)\\.([0-9]+)\\.([0-9]+)" PYTHON_VERSION "${VERSION}")
+set(PYTHON_VERSION_MAJOR "${CMAKE_MATCH_1}")
+set(PYTHON_VERSION_MINOR "${CMAKE_MATCH_2}")
+set(PYTHON_VERSION_PATCH "${CMAKE_MATCH_3}")
+
+set(PATCHES
+    0001-only-build-required-projects.patch
+    0003-use-vcpkg-zlib.patch
+    0004-devendor-external-dependencies.patch
+    0005-dont-copy-vcruntime.patch
+    0008-python.pc.patch
+    0010-dont-skip-rpath.patch
+    0015-dont-use-WINDOWS-def.patch
+    0016-undup-ffi-symbols.patch # Required for lld-link.
+    0018-fix-sysconfig-include.patch
+    0019-fix-ssl-linkage.patch
+    0021-use-system-libmpdec.patch
+    0022-use-system-zstd.patch
+    0023-regenerate-configure.patch # Generated with Autoconf 2.72 after the configure.ac patches.
+)
+
+if(VCPKG_LIBRARY_LINKAGE STREQUAL "static")
+    list(APPEND PATCHES 0002-static-library.patch)
+endif()
+
+if(VCPKG_TARGET_IS_WINDOWS)
+    string(COMPARE EQUAL "${VCPKG_LIBRARY_LINKAGE}" "dynamic" PYTHON_ALLOW_EXTENSIONS)
+    if(PYTHON_HAS_EXTENSIONS AND NOT PYTHON_ALLOW_EXTENSIONS)
+        # This should never be reached due to vcpkg_check_linkage above
+        message(FATAL_ERROR "Cannot build python extensions! Python extensions on windows can only be built if python is a dynamic library!")
+    endif()
+    # The Windows 11 SDK has a problem that causes it to error on the resource files, so we patch that.
+    vcpkg_get_windows_sdk(WINSDK_VERSION)
+    if("${WINSDK_VERSION}" VERSION_GREATER_EQUAL "10.0.22000")
+        list(APPEND PATCHES "0007-workaround-windows-11-sdk-rc-compiler-error.patch")
+    endif()
+    if(VCPKG_CROSSCOMPILING)
+        list(APPEND PATCHES "0016-fix-win-cross.patch")
+    else()
+        list(APPEND PATCHES "0017-fix-win.patch")
+    endif()
+endif()
+
+# unibind: CPython hard-codes /GL as item metadata, which the WholeProgramOptimization=false
+# vcpkg_msbuild_install passes for a static library cannot override. A /GL object is tied to
+# the exact compiler that made it and is unreadable by lld-link, so a static CPython must not
+# have one. See cmake/vcpkg-ports/README.md.
+list(APPEND PATCHES 0100-no-whole-program-optimization.patch)
+# unibind: what building extension modules into a static core needs of the sources -
+#  * PC/config.c takes extra _PyImport_Inittab entries from a header the port generates
+#    (vcpkg_builtin_modules.h, below);
+#  * _wmi passes bstr_t a wide literal: a narrow one needs comsupp.lib's
+#    ConvertStringToBSTR, which older toolsets' comsupp.lib does not have in the wchar_t
+#    form a static library's consumer would need;
+#  * a built-in _ctypes defines no DllGetClassObject/DllCanUnloadNow, which would otherwise
+#    become the embedding program's COM exports and collide with its own.
+list(APPEND PATCHES 0101-builtin-extension-modules.patch)
+# unibind: asyncio's proactor loop installs a signal wakeup fd whenever it is made on a
+# "main thread" - which the first thread of a sub-interpreter is, to threading - and
+# signal.set_wakeup_fd refuses outside the main interpreter. Skip it there.
+list(APPEND PATCHES 0102-asyncio-proactor-in-subinterpreters.patch)
+# unibind: _ssl's certEncodingType (ssl.enum_certificates, which create_default_context calls
+# on Windows) cached two strings in function-level statics: made in whichever interpreter
+# asked first, then shared - reference counts and all - by every interpreter on every thread,
+# and used after the first one ended. Make them on every call instead.
+list(APPEND PATCHES 0104-ssl-no-shared-static-strings.patch)
+# unibind: in a debug build CPython keeps 4096 pointers of stack between its soft and hard
+# recursion limits, and MSVC's unoptimised evaluation loop spends more than that between two
+# checks, so a runaway recursion could step over the soft limit into a fatal error. Four times
+# the margin for a debug build on Windows. (Release keeps upstream's.)
+list(APPEND PATCHES 0105-debug-stack-margin-on-windows.patch)
+
+# unibind: on Windows a static core cannot load a .pyd (every one links python3X.dll), so the
+# extension modules are compiled into the static library instead, as built-in modules. Each one
+# listed here is built as a static library with Py_BUILD_CORE_BUILTIN, merged into python3X.lib
+# by pythoncore's librarian step, and registered in PC/config.c's inittab. The third-party
+# libraries they call (openssl, libffi, ...) stay separate link inputs of the consumer - see
+# cmake/vcpkg-ports/README.md for the full list.
+set(PYTHON_BUILTIN_EXTENSIONS "")
+if(VCPKG_TARGET_IS_WINDOWS AND VCPKG_LIBRARY_LINKAGE STREQUAL "static")
+    # Everything PCbuild/pcbuild.proj builds as an extension module, except _tkinter (Tcl/Tk)
+    # and the test modules.
+    set(PYTHON_BUILTIN_EXTENSIONS
+        _asyncio
+        _bz2
+        _ctypes
+        _decimal
+        _elementtree
+        _hashlib
+        _lzma
+        _multiprocessing
+        _overlapped
+        _queue
+        _remote_debugging
+        _socket
+        _sqlite3
+        _ssl
+        _uuid
+        _wmi
+        _zoneinfo
+        _zstd
+        pyexpat
+        select
+        unicodedata
+        winsound
+    )
+    # What the built-in modules (and openssl) call into in Windows itself. The static library
+    # cannot carry these; python.exe links them here, and a consumer links them too.
+    set(PYTHON_BUILTIN_SYSTEM_LIBS
+        ws2_32.lib      # _socket, select, _overlapped, _multiprocessing, _ssl, _hashlib
+        iphlpapi.lib    # _socket
+        rpcrt4.lib      # _socket, _uuid
+        crypt32.lib     # _ssl, openssl
+        winmm.lib       # winsound
+        wbemuuid.lib    # _wmi
+        propsys.lib     # _wmi
+        user32.lib      # openssl
+        advapi32.lib    # openssl
+    )
+endif()
+
+vcpkg_from_github(
+    OUT_SOURCE_PATH SOURCE_PATH
+    REPO python/cpython
+    REF v${VERSION}
+    SHA512 e02e73a249227b8ff23e4edd68d1a98b92d98dcce220a2100d79f9c86088e21775e3650d7d184e189ab6e6cc4a720ecaab049c729f3b6be1c71fd0acf9d82776
+    HEAD_REF master
+    PATCHES ${PATCHES}
+)
+
+vcpkg_replace_string("${SOURCE_PATH}/Makefile.pre.in" "$(INSTALL) -d -m $(DIRMODE)" "$(MKDIR_P)")
+
+if(VCPKG_TARGET_IS_WINDOWS)
+    # unibind: the built-in extension modules (see PYTHON_BUILTIN_EXTENSIONS above).
+    set(builtin_decls "")
+    set(builtin_entries "")
+    set(PYTHON_BUILTIN_PROJECTS "")
+    set(PYTHON_BUILTIN_LIBS "")
+    foreach(module IN LISTS PYTHON_BUILTIN_EXTENSIONS)
+        # A static library, not a .pyd; python_vcpkg.props does the rest.
+        vcpkg_replace_string("${SOURCE_PATH}/PCbuild/${module}.vcxproj"
+            "<ConfigurationType>DynamicLibrary</ConfigurationType>"
+            "<ConfigurationType>StaticLibrary</ConfigurationType>")
+        string(APPEND builtin_decls "extern PyObject* PyInit_${module}(void);\n")
+        string(APPEND builtin_entries " \\\n    {\"${module}\", PyInit_${module}},")
+        list(APPEND PYTHON_BUILTIN_PROJECTS "${module}.vcxproj")
+        list(APPEND PYTHON_BUILTIN_LIBS "$(OutDir)${module}$(PyDebugExt).lib")
+    endforeach()
+    file(WRITE "${SOURCE_PATH}/PC/vcpkg_builtin_modules.h"
+        "/* Generated by the vcpkg python3 port: extension modules built into the core. */\n"
+        "${builtin_decls}"
+        "#define VCPKG_BUILTIN_INITTAB${builtin_entries}\n"
+    )
+endif()
+
+function(make_python_pkgconfig)
+    cmake_parse_arguments(PARSE_ARGV 0 arg "" "FILE;INSTALL_ROOT;EXEC_PREFIX;INCLUDEDIR;ABIFLAGS" "")
+
+    set(prefix "${CURRENT_PACKAGES_DIR}")
+    set(libdir [[${prefix}/lib]])
+    set(exec_prefix ${arg_EXEC_PREFIX})
+    set(includedir ${arg_INCLUDEDIR})
+    set(VERSION "${PYTHON_VERSION_MAJOR}.${PYTHON_VERSION_MINOR}")
+    set(ABIFLAGS ${arg_ABIFLAGS})
+
+    string(REPLACE "python" "python-${VERSION}" out_file ${arg_FILE})
+    set(out_full_path "${arg_INSTALL_ROOT}/lib/pkgconfig/${out_file}")
+    configure_file("${SOURCE_PATH}/Misc/${arg_FILE}.in" ${out_full_path} @ONLY)
+
+    file(READ ${out_full_path} pkgconfig_file)
+    string(REPLACE "-lpython${VERSION}" "-lpython${PYTHON_VERSION_MAJOR}${PYTHON_VERSION_MINOR}" pkgconfig_file "${pkgconfig_file}")
+    file(WRITE ${out_full_path} "${pkgconfig_file}")
+endfunction()
+
+if(VCPKG_TARGET_IS_WINDOWS)
+    # Due to the way Python handles C extension modules on Windows, a static python core cannot
+    # load extension modules. unibind: it has them built in instead, and python.exe links what
+    # they need.
+    if(PYTHON_HAS_EXTENSIONS OR PYTHON_BUILTIN_EXTENSIONS)
+        find_library(BZ2_RELEASE NAMES bz2 PATHS "${CURRENT_INSTALLED_DIR}/lib" NO_DEFAULT_PATH)
+        find_library(BZ2_DEBUG NAMES bz2d PATHS "${CURRENT_INSTALLED_DIR}/debug/lib" NO_DEFAULT_PATH)
+        find_library(CRYPTO_RELEASE NAMES libcrypto PATHS "${CURRENT_INSTALLED_DIR}/lib" NO_DEFAULT_PATH)
+        find_library(CRYPTO_DEBUG NAMES libcrypto PATHS "${CURRENT_INSTALLED_DIR}/debug/lib" NO_DEFAULT_PATH)
+        find_library(EXPAT_RELEASE NAMES libexpat libexpatMD libexpatMT PATHS "${CURRENT_INSTALLED_DIR}/lib" NO_DEFAULT_PATH)
+        find_library(EXPAT_DEBUG NAMES libexpatd libexpatdMD libexpatdMT PATHS "${CURRENT_INSTALLED_DIR}/debug/lib" NO_DEFAULT_PATH)
+        find_library(FFI_RELEASE NAMES ffi PATHS "${CURRENT_INSTALLED_DIR}/lib" NO_DEFAULT_PATH)
+        find_library(FFI_DEBUG NAMES ffi PATHS "${CURRENT_INSTALLED_DIR}/debug/lib" NO_DEFAULT_PATH)
+        find_library(LZMA_RELEASE NAMES lzma PATHS "${CURRENT_INSTALLED_DIR}/lib" NO_DEFAULT_PATH)
+        find_library(LZMA_DEBUG NAMES lzma PATHS "${CURRENT_INSTALLED_DIR}/debug/lib" NO_DEFAULT_PATH)
+        find_library(ZSTD_RELEASE NAMES zstd PATHS "${CURRENT_INSTALLED_DIR}/lib" NO_DEFAULT_PATH)
+        find_library(ZSTD_DEBUG NAMES zstd zstdd PATHS "${CURRENT_INSTALLED_DIR}/debug/lib" NO_DEFAULT_PATH)
+        find_library(MPDECIMAL_RELEASE NAMES libmpdec PATHS "${CURRENT_INSTALLED_DIR}/lib" NO_DEFAULT_PATH)
+        find_library(MPDECIMAL_DEBUG NAMES libmpdec PATHS "${CURRENT_INSTALLED_DIR}/debug/lib" NO_DEFAULT_PATH)
+        x_vcpkg_pkgconfig_get_modules(PREFIX PC_SQLITE3 MODULES sqlite3 LIBRARIES USE_MSVC_SYNTAX_ON_WINDOWS)
+        separate_arguments(SQLITE3_LIBRARIES_DEBUG UNIX_COMMAND "${PC_SQLITE3_LIBRARIES_DEBUG}")
+        separate_arguments(SQLITE3_LIBRARIES_RELEASE UNIX_COMMAND "${PC_SQLITE3_LIBRARIES_RELEASE}")
+        find_library(SSL_RELEASE NAMES libssl PATHS "${CURRENT_INSTALLED_DIR}/lib" NO_DEFAULT_PATH)
+        find_library(SSL_DEBUG NAMES libssl PATHS "${CURRENT_INSTALLED_DIR}/debug/lib" NO_DEFAULT_PATH)
+        list(APPEND add_libs_rel "${BZ2_RELEASE};${EXPAT_RELEASE};${FFI_RELEASE};${LZMA_RELEASE};${SQLITE3_LIBRARIES_RELEASE}")
+        list(APPEND add_libs_dbg "${BZ2_DEBUG};${EXPAT_DEBUG};${FFI_DEBUG};${LZMA_DEBUG};${SQLITE3_LIBRARIES_DEBUG}")
+        if(PYTHON_BUILTIN_EXTENSIONS)
+            # For a .pyd, openssl.props links these into _ssl and _hashlib, and
+            # python_vcpkg.props libmpdec and zstd into _decimal and _zstd.
+            list(APPEND add_libs_rel "${SSL_RELEASE};${CRYPTO_RELEASE};${MPDECIMAL_RELEASE};${ZSTD_RELEASE}")
+            list(APPEND add_libs_dbg "${SSL_DEBUG};${CRYPTO_DEBUG};${MPDECIMAL_DEBUG};${ZSTD_DEBUG}")
+        endif()
+    else()
+        message(STATUS "WARNING: Extensions have been disabled. No C extension modules will be available.")
+    endif()
+    find_library(ZLIB_RELEASE NAMES z zs zlib PATHS "${CURRENT_INSTALLED_DIR}/lib" NO_DEFAULT_PATH)
+    find_library(ZLIB_DEBUG NAMES zd zsd zlibd PATHS "${CURRENT_INSTALLED_DIR}/debug/lib" NO_DEFAULT_PATH)
+    list(APPEND add_libs_rel "${ZLIB_RELEASE}")
+    list(APPEND add_libs_dbg "${ZLIB_DEBUG}")
+
+    configure_file("${CMAKE_CURRENT_LIST_DIR}/python_vcpkg.props.in" "${SOURCE_PATH}/PCbuild/python_vcpkg.props")
+    configure_file("${CMAKE_CURRENT_LIST_DIR}/openssl.props.in" "${SOURCE_PATH}/PCbuild/openssl.props")
+    file(WRITE "${SOURCE_PATH}/PCbuild/libffi.props"
+        "<?xml version='1.0' encoding='utf-8'?>"
+        "<Project xmlns='http://schemas.microsoft.com/developer/msbuild/2003' />"
+    )
+
+    list(APPEND VCPKG_CMAKE_CONFIGURE_OPTIONS "-DVCPKG_SET_CHARSET_FLAG=OFF")
+    if(PYTHON_HAS_EXTENSIONS)
+        set(OPTIONS
+            "/p:IncludeExtensions=true"
+            "/p:IncludeExternals=true"
+            "/p:IncludeCTypes=true"
+            "/p:IncludeSSL=true"
+            "/p:IncludeTkinter=false"
+            "/p:IncludeTests=false"
+            "/p:ForceImportBeforeCppTargets=${SOURCE_PATH}/PCbuild/python_vcpkg.props"
+        )
+    else()
+        set(OPTIONS
+            "/p:IncludeExtensions=false"
+            "/p:IncludeExternals=false"
+            "/p:IncludeTests=false"
+            "/p:ForceImportBeforeCppTargets=${SOURCE_PATH}/PCbuild/python_vcpkg.props"
+        )
+    endif()
+    if(VCPKG_TARGET_IS_UWP)
+        list(APPEND OPTIONS "/p:IncludeUwp=true")
+    else()
+        list(APPEND OPTIONS "/p:IncludeUwp=false")
+    endif()
+    if(VCPKG_LIBRARY_LINKAGE STREQUAL "dynamic")
+        list(APPEND OPTIONS "/p:_VcpkgPythonLinkage=DynamicLibrary")
+    else()
+        list(APPEND OPTIONS "/p:_VcpkgPythonLinkage=StaticLibrary")
+    endif()
+
+    vcpkg_find_acquire_program(PYTHON3)
+    get_filename_component(PYTHON3_DIR "${PYTHON3}" DIRECTORY)
+    set(ENV{PythonForBuild} "${PYTHON3_DIR}/python.exe") # PythonForBuild is what's used on windows, despite the readme
+
+    if(VCPKG_CROSSCOMPILING)
+        vcpkg_add_to_path("${CURRENT_HOST_INSTALLED_DIR}/manual-tools/${PORT}")
+    endif()
+
+    vcpkg_msbuild_install(
+        SOURCE_PATH "${SOURCE_PATH}"
+        PROJECT_SUBPATH "PCbuild/pcbuild.proj"
+        ADD_BIN_TO_PATH
+        OPTIONS ${OPTIONS}
+        ADDITIONAL_LIBS_RELEASE ${add_libs_rel}
+        ADDITIONAL_LIBS_DEBUG ${add_libs_dbg}
+    )
+
+    if(NOT VCPKG_CROSSCOMPILING)
+        file(GLOB_RECURSE freeze_module "${CURRENT_BUILDTREES_DIR}/${TARGET_TRIPLET}-rel/PCbuild/**/_freeze_module.exe")
+        file(COPY "${freeze_module}" DESTINATION "${CURRENT_PACKAGES_DIR}/manual-tools/${PORT}")
+        vcpkg_copy_tool_dependencies("${CURRENT_PACKAGES_DIR}/manual-tools/${PORT}")
+    endif()
+
+    # The extension modules must be placed in the DLLs directory, so we can't use vcpkg_copy_tools()
+    if(PYTHON_HAS_EXTENSIONS)
+        file(GLOB_RECURSE PYTHON_EXTENSIONS_RELEASE "${CURRENT_BUILDTREES_DIR}/${TARGET_TRIPLET}-rel/*.pyd")
+        file(COPY ${PYTHON_EXTENSIONS_RELEASE} DESTINATION "${CURRENT_PACKAGES_DIR}/bin")
+        file(COPY ${PYTHON_EXTENSIONS_RELEASE} DESTINATION "${CURRENT_PACKAGES_DIR}/tools/${PORT}/DLLs")
+        vcpkg_copy_tool_dependencies("${CURRENT_PACKAGES_DIR}/tools/${PORT}/DLLs")
+        file(REMOVE "${CURRENT_PACKAGES_DIR}/tools/${PORT}/DLLs/python${PYTHON_VERSION_MAJOR}${PYTHON_VERSION_MINOR}.dll")
+
+        file(GLOB_RECURSE PYTHON_EXTENSIONS_DEBUG "${CURRENT_BUILDTREES_DIR}/${TARGET_TRIPLET}-dbg/*.pyd")
+        file(COPY ${PYTHON_EXTENSIONS_DEBUG} DESTINATION "${CURRENT_PACKAGES_DIR}/debug/bin")
+    endif()
+
+    file(COPY "${SOURCE_PATH}/Include/" "${SOURCE_PATH}/PC/pyconfig.h"
+        DESTINATION "${CURRENT_PACKAGES_DIR}/include/python${PYTHON_VERSION_MAJOR}.${PYTHON_VERSION_MINOR}"
+        FILES_MATCHING PATTERN *.h
+    )
+    file(COPY "${SOURCE_PATH}/Lib" DESTINATION "${CURRENT_PACKAGES_DIR}/tools/${PORT}")
+    foreach(launcher IN ITEMS venvlauncher venvwlauncher)
+        file(RENAME "${CURRENT_PACKAGES_DIR}/tools/${PORT}/${launcher}.exe"
+            "${CURRENT_PACKAGES_DIR}/tools/${PORT}/Lib/venv/scripts/nt/${launcher}.exe")
+    endforeach()
+
+
+    # Remove any extension libraries and other unversioned binaries that could conflict with the python2 port.
+    # You don't need to link against these anyway.
+    file(GLOB PYTHON_LIBS
+        "${CURRENT_PACKAGES_DIR}/lib/*.lib"
+        "${CURRENT_PACKAGES_DIR}/debug/lib/*.lib"
+    )
+    list(FILTER PYTHON_LIBS EXCLUDE REGEX [[python[0-9]*(_d)?\.lib$]])
+    file(GLOB PYTHON_INSTALLERS "${CURRENT_PACKAGES_DIR}/tools/${PORT}/wininst-*.exe")
+    file(REMOVE ${PYTHON_LIBS} ${PYTHON_INSTALLERS})
+
+    # pkg-config files
+    if(NOT DEFINED VCPKG_BUILD_TYPE OR VCPKG_BUILD_TYPE STREQUAL "release")
+        make_python_pkgconfig(FILE python.pc INSTALL_ROOT ${CURRENT_PACKAGES_DIR}
+            EXEC_PREFIX "\${prefix}/tools/${PORT}" INCLUDEDIR [[${prefix}/include]] ABIFLAGS "")
+        make_python_pkgconfig(FILE python-embed.pc INSTALL_ROOT ${CURRENT_PACKAGES_DIR}
+            EXEC_PREFIX "\${prefix}/tools/${PORT}" INCLUDEDIR [[${prefix}/include]] ABIFLAGS "")
+    endif()
+
+    if(NOT DEFINED VCPKG_BUILD_TYPE OR VCPKG_BUILD_TYPE STREQUAL "debug")
+        make_python_pkgconfig(FILE python.pc INSTALL_ROOT "${CURRENT_PACKAGES_DIR}/debug"
+            EXEC_PREFIX "\${prefix}/../tools/${PORT}" INCLUDEDIR [[${prefix}/../include]] ABIFLAGS "_d")
+        make_python_pkgconfig(FILE python-embed.pc INSTALL_ROOT "${CURRENT_PACKAGES_DIR}/debug"
+            EXEC_PREFIX "\${prefix}/../tools/${PORT}" INCLUDEDIR [[${prefix}/../include]] ABIFLAGS "_d")
+    endif()
+
+    vcpkg_fixup_pkgconfig()
+
+    # Remove static library belonging to executable
+    if (VCPKG_LIBRARY_LINKAGE STREQUAL "static")
+        if (EXISTS "${CURRENT_PACKAGES_DIR}/lib/python.lib")
+            file(MAKE_DIRECTORY "${CURRENT_PACKAGES_DIR}/lib/manual-link")
+            file(RENAME "${CURRENT_PACKAGES_DIR}/lib/python.lib"
+                "${CURRENT_PACKAGES_DIR}/lib/manual-link/python.lib")
+        endif()
+        if (EXISTS "${CURRENT_PACKAGES_DIR}/debug/lib/python_d.lib")
+            file(MAKE_DIRECTORY "${CURRENT_PACKAGES_DIR}/debug/lib/manual-link")
+            file(RENAME "${CURRENT_PACKAGES_DIR}/debug/lib/python_d.lib"
+                "${CURRENT_PACKAGES_DIR}/debug/lib/manual-link/python_d.lib")
+        endif()
+    endif()
+else()
+    # The Python Stable ABI, `libpython3.so` is not produced by the upstream build system with --with-pydebug option
+    if(VCPKG_LIBRARY_LINKAGE STREQUAL "dynamic" AND NOT VCPKG_BUILD_TYPE)
+        set(VCPKG_POLICY_MISMATCHED_NUMBER_OF_BINARIES enabled)
+    endif()
+
+    set(OPTIONS
+        "--with-openssl=${CURRENT_INSTALLED_DIR}"
+        "--with-system-libmpdec"
+        "--without-ensurepip"
+        "--with-suffix="
+        "--with-system-expat"
+        "--disable-test-modules"
+    )
+    if(VCPKG_TARGET_IS_OSX OR VCPKG_TARGET_IS_BSD)
+        list(APPEND OPTIONS "LIBS=-liconv -lintl")
+    endif()
+
+    if("readline" IN_LIST FEATURES)
+        list(APPEND OPTIONS "--with-readline")
+    else()
+        list(APPEND OPTIONS "--without-readline")
+    endif()
+
+    if(VCPKG_TARGET_IS_ANDROID)
+        list(APPEND OPTIONS "--without-static-libpython" )
+        list(APPEND VCPKG_CMAKE_CONFIGURE_OPTIONS "-DANDROID_NO_UNDEFINED=OFF")
+    endif()
+
+    if(VCPKG_CROSSCOMPILING)
+        # Cannot not run target executables during configure
+        if(NOT PYTHON3_BUGGY_GETADDRINFO)
+            list(APPEND OPTIONS "ac_cv_buggy_getaddrinfo=no")
+        endif()
+        if(NOT PYTHON3_NO_PTMX)
+            list(APPEND OPTIONS "ac_cv_file__dev_ptmx=yes" "ac_cv_file__dev_ptc=no")
+        endif()
+    endif()
+
+    # The version of the build Python must match the version of the cross compiled host Python.
+    # https://docs.python.org/3/using/configure.html#cross-compiling-options
+    if(VCPKG_CROSSCOMPILING)
+        set(_python_for_build "${CURRENT_HOST_INSTALLED_DIR}/tools/python3/python${PYTHON_VERSION_MAJOR}.${PYTHON_VERSION_MINOR}")
+        list(APPEND OPTIONS "--with-build-python=${_python_for_build}")
+    endif()
+
+    vcpkg_make_configure(
+        SOURCE_PATH "${SOURCE_PATH}"
+        DEFAULT_OPTIONS_EXCLUDE "^--(disable|enable)-static"
+        OPTIONS
+            ${OPTIONS}
+            py_cv_module__curses=n/a
+            py_cv_module__curses_panel=n/a
+            py_cv_module__tkinter=n/a
+        OPTIONS_DEBUG
+            "--with-pydebug"
+            "vcpkg_rpath=${CURRENT_INSTALLED_DIR}/debug/lib"
+        OPTIONS_RELEASE
+            "vcpkg_rpath=${CURRENT_INSTALLED_DIR}/lib"
+    )
+    vcpkg_make_install(TARGETS altinstall)
+
+    file(COPY "${CURRENT_PACKAGES_DIR}/tools/${PORT}/bin/" DESTINATION "${CURRENT_PACKAGES_DIR}/tools/${PORT}")
+
+    # Makefiles, c files, __pycache__, and other junk.
+    file(GLOB PYTHON_LIB_DIRS LIST_DIRECTORIES true
+        "${CURRENT_PACKAGES_DIR}/lib/python${PYTHON_VERSION_MAJOR}.${PYTHON_VERSION_MINOR}/*"
+        "${CURRENT_PACKAGES_DIR}/debug/lib/python${PYTHON_VERSION_MAJOR}.${PYTHON_VERSION_MINOR}/*")
+    list(FILTER PYTHON_LIB_DIRS INCLUDE REGEX [[config-[0-9].*.*]])
+    file(REMOVE_RECURSE ${PYTHON_LIB_DIRS})
+
+    file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/bin")
+    file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/debug/bin")
+    file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/debug/include")
+    file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/debug/share")
+    file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/include/python${PYTHON_VERSION_MAJOR}.${PYTHON_VERSION_MINOR}d")
+    file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/share/${PORT}/man1")
+    file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/tools/${PORT}/bin")
+    file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/tools/${PORT}/debug")
+
+    vcpkg_fixup_pkgconfig()
+
+    # Perform some post-build checks on modules
+    file(GLOB python_libs_dynload_debug LIST_DIRECTORIES false "${CURRENT_PACKAGES_DIR}/debug/lib/python${PYTHON_VERSION_MAJOR}.${PYTHON_VERSION_MINOR}/lib-dynload/*.so*")
+    file(GLOB python_libs_dynload_release LIST_DIRECTORIES false "${CURRENT_PACKAGES_DIR}/lib/python${PYTHON_VERSION_MAJOR}.${PYTHON_VERSION_MINOR}/lib-dynload/*.so*")
+    set(python_libs_dynload_failed_debug ${python_libs_dynload_debug})
+    set(python_libs_dynload_failed_release ${python_libs_dynload_release})
+    list(FILTER python_libs_dynload_failed_debug INCLUDE REGEX ".*_failed\.so.*")
+    list(FILTER python_libs_dynload_failed_release INCLUDE REGEX ".*_failed\.so.*")
+    if(python_libs_dynload_failed_debug OR python_libs_dynload_failed_release)
+        list(JOIN python_libs_dynload_failed_debug "\n" python_libs_dynload_failed_debug_str)
+        list(JOIN python_libs_dynload_failed_release "\n" python_libs_dynload_failed_release_str)
+        message(FATAL_ERROR "There should be no modules with \"_failed\" suffix:\n${python_libs_dynload_failed_debug_str}\n${python_libs_dynload_failed_release_str}")
+    endif()
+    if(NOT VCPKG_BUILD_TYPE)
+        list(LENGTH python_libs_dynload_release python_libs_dynload_release_length)
+        list(LENGTH python_libs_dynload_debug python_libs_dynload_debug_length)
+        if(NOT python_libs_dynload_release_length STREQUAL python_libs_dynload_debug_length)
+            message(FATAL_ERROR "Mismatched number of modules: ${python_libs_dynload_debug_length} in debug, ${python_libs_dynload_release_length} in release")
+        endif()
+    endif()
+endif()
+
+vcpkg_install_copyright(FILE_LIST "${SOURCE_PATH}/LICENSE")
+
+file(READ "${CMAKE_CURRENT_LIST_DIR}/usage" usage)
+if(VCPKG_TARGET_IS_WINDOWS)
+    if(PYTHON_HAS_EXTENSIONS)
+        file(READ "${CMAKE_CURRENT_LIST_DIR}/usage.win" usage_extra)
+    else()
+        set(usage_extra "")
+    endif()
+else()
+    file(READ "${CMAKE_CURRENT_LIST_DIR}/usage.unix" usage_extra)
+endif()
+string(REPLACE "@PYTHON_VERSION_MINOR@" "${PYTHON_VERSION_MINOR}" usage_extra "${usage_extra}")
+file(WRITE "${CURRENT_PACKAGES_DIR}/share/${PORT}/usage" "${usage}\n${usage_extra}")
+
+function(_generate_finder)
+    cmake_parse_arguments(PythonFinder "NO_OVERRIDE;SUPPORTS_ARTIFACTS_PREFIX" "DIRECTORY;PREFIX" "" ${ARGN})
+    configure_file(
+        "${CMAKE_CURRENT_LIST_DIR}/vcpkg-cmake-wrapper.cmake"
+        "${CURRENT_PACKAGES_DIR}/share/${PythonFinder_DIRECTORY}/vcpkg-cmake-wrapper.cmake"
+        @ONLY
+    )
+endfunction()
+
+message(STATUS "Installing cmake wrappers")
+_generate_finder(DIRECTORY "python" PREFIX "Python" SUPPORTS_ARTIFACTS_PREFIX)
+_generate_finder(DIRECTORY "python3" PREFIX "Python3" SUPPORTS_ARTIFACTS_PREFIX)
+_generate_finder(DIRECTORY "pythoninterp" PREFIX "PYTHON" NO_OVERRIDE)
+
+if (NOT VCPKG_TARGET_IS_WINDOWS)
+    function(replace_dirs_in_config_file python_config_file)
+        vcpkg_replace_string("${python_config_file}" "${CURRENT_INSTALLED_DIR}" "' + _base + '")
+        vcpkg_replace_string("${python_config_file}" "${CURRENT_HOST_INSTALLED_DIR}" "' + _base + '/../${HOST_TRIPLET}" IGNORE_UNCHANGED)
+        vcpkg_replace_string("${python_config_file}" "${CURRENT_PACKAGES_DIR}" "' + _base + '")
+        vcpkg_replace_string("${python_config_file}" "${CURRENT_BUILDTREES_DIR}" "not/existing")
+    endfunction()
+
+    if(NOT DEFINED VCPKG_BUILD_TYPE OR VCPKG_BUILD_TYPE STREQUAL "release")
+        file(GLOB python_config_files "${CURRENT_PACKAGES_DIR}/lib/python${PYTHON_VERSION_MAJOR}.${PYTHON_VERSION_MINOR}/_sysconfigdata*")
+        list(POP_FRONT python_config_files python_config_file)
+        vcpkg_replace_string("${python_config_file}" "# system configuration generated and used by the sysconfig module" "# system configuration generated and used by the sysconfig module\nimport os\n_base = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))\n")
+        replace_dirs_in_config_file("${python_config_file}")
+    endif()
+
+    if(NOT DEFINED VCPKG_BUILD_TYPE OR VCPKG_BUILD_TYPE STREQUAL "debug")
+        file(GLOB python_config_files "${CURRENT_PACKAGES_DIR}/debug/lib/python${PYTHON_VERSION_MAJOR}.${PYTHON_VERSION_MINOR}/_sysconfigdata*")
+        list(POP_FRONT python_config_files python_config_file)
+        vcpkg_replace_string("${python_config_file}" "# system configuration generated and used by the sysconfig module" "# system configuration generated and used by the sysconfig module\nimport os\n_base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))\n")
+        replace_dirs_in_config_file("${python_config_file}")
+    endif()
+endif()
+
+if(NOT VCPKG_TARGET_IS_WINDOWS)
+  file(COPY_FILE "${CURRENT_PACKAGES_DIR}/tools/python3/python3.${PYTHON_VERSION_MINOR}" "${CURRENT_PACKAGES_DIR}/tools/python3/python3")
+endif()
+
+configure_file("${CMAKE_CURRENT_LIST_DIR}/vcpkg-port-config.cmake" "${CURRENT_PACKAGES_DIR}/share/${PORT}/vcpkg-port-config.cmake" @ONLY)
+
+# For testing
+block()
+  include("${CURRENT_PACKAGES_DIR}/share/${PORT}/vcpkg-port-config.cmake")
+  set(CURRENT_HOST_INSTALLED_DIR "${CURRENT_PACKAGES_DIR}")
+  set(CURRENT_INSTALLED_DIR "${CURRENT_PACKAGES_DIR}")
+  vcpkg_get_vcpkg_installed_python(VCPKG_PYTHON3)
+endblock()

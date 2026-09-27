@@ -1,21 +1,33 @@
 # Licensing
 
 Short version: **this repository is MIT. The engines it links are not, and the
-one that matters is SpiderMonkey, which is MPL-2.0.** Linking it into a
+one that matters most is SpiderMonkey, which is MPL-2.0.** Linking it into a
 proprietary product is allowed and always was - what MPL asks for is that the
-*engine's* source stays available, not yours.
+*engine's* source stays available, not yours. **CPython is permissive** (the PSF
+license), but a program linked with that backend carries nine more libraries
+and CPython's standard library compiled into it, and each wants its notice;
+and because the CPython here is patched, the PSF license asks for a summary of
+the changes.
 
 This is a description of the position, not legal advice. If you are shipping a
 product, have your own counsel read it.
 
 ## What is in this repository
 
-Nothing of either engine. The whole tree is `include/unibind/`, `src/backends/`,
-`tests/`, `tools/`, `docs/` and the build files, all written here; `git ls-files`
-lists no engine header, no engine source and no engine binary. `dependencies/`
-is where the build unpacks an engine it fetched from that engine's own
-published release at configure time, and it is ignored by git -
-`dependencies/README.md` is the only tracked file under it, and it is prose.
+No engine. The tree is `include/unibind/`, `src/backends/`, `tests/`, `tools/`,
+`examples/`, `docs/` and the build files, written here; `git ls-files` lists no
+engine header and no engine binary. `dependencies/` is where the build unpacks a
+JavaScript engine it fetched from that engine's own published release at
+configure time, and it is ignored by git - `dependencies/README.md` is the only
+tracked file under it, and it is prose.
+
+**One directory is not the authors' own**, and it is the exception worth
+knowing: `cmake/vcpkg-ports/python3/` is vcpkg's `python3` port, copied and
+changed. Its `portfile.cmake`, `vcpkg.json` and the rest are vcpkg's, under
+vcpkg's MIT licence (Microsoft); its `.patch` files - vcpkg's and the four
+added here - are diffs against CPython's source, and quote lines of it as
+context, under the PSF license. Nothing else of CPython is in the tree: vcpkg
+downloads the source and builds it at configure time.
 
 Fetching is not distributing, and it does not change any of what follows: the
 bytes come from their publisher to the machine that asked for them, and the
@@ -28,9 +40,20 @@ Build-time third parties:
 | doctest | MIT | vcpkg, tests only, not part of the library |
 | V8 | BSD-3-Clause | not vendored; fetched, or a path you point CMake at |
 | SpiderMonkey | MPL-2.0 | not vendored; fetched, or a path you point CMake at |
+| CPython 3.14.7 | PSF License v2 (and the older CNRI and BeOpen terms it carries) | built by vcpkg; the port and patches in `cmake/vcpkg-ports/python3` |
+| the port files themselves | MIT (vcpkg) | `cmake/vcpkg-ports/python3` and `cmake/vcpkg-ports/mpdecimal` |
+| OpenSSL 3 | Apache-2.0 | built by vcpkg for the python backend; linked into it |
+| libffi | MIT | the same |
+| SQLite | public domain | the same |
+| expat | MIT | the same |
+| liblzma (xz) | 0BSD | the same |
+| bzip2 | bzip2's BSD-style licence | the same |
+| zlib | zlib licence | the same |
+| libmpdec (mpdecimal) | BSD-2-Clause | the same |
+| zstd | BSD-3-Clause (dual-licensed with GPLv2; the BSD terms are the ones taken) | the same |
 
-So the copyright in this tree is entirely the authors' own, and the licence
-here could have been anything. It is MIT.
+So the copyright in this tree is the authors' own, apart from that one port
+directory, and the licence here could have been anything. It is MIT.
 
 ## Why MIT
 
@@ -108,6 +131,61 @@ In practice, shipping a product that statically links `spidermonkey.lib`:
 product on top of the SpiderMonkey backend is fine, and costs you a notice file
 and a URL that keeps working.
 
+### If you built the CPython backend
+
+Everything here is permissive - no copyleft anywhere - and a closed-source
+product is fine. What it costs is notices, and one thing the PSF license asks
+that the others do not. Two parts of CPython go out with your program, and both
+are covered:
+
+- **The engine, linked in**: `python314.lib`, which is CPython with the standard
+  library's C extension modules built into it.
+- **The standard library, compiled into it**: CPython's own Python source,
+  byte-compiled at build time and embedded in the backend library
+  (`docs/python.md` section 10.3) - or, built with `UNIBIND_PYTHON_EMBED_STDLIB`
+  off, the `Lib/` directory a program ships beside it, distributed as source.
+  Either way it is CPython's, under the same license.
+
+What you owe:
+
+1. **The PSF license text and its copyright notice**, "Copyright (c) 2001 Python
+   Software Foundation; All Rights Reserved", retained with the software (§2).
+   vcpkg installs the text as `share/python3/copyright` in the prefix it built;
+   that is CPython's `LICENSE` file, history and the CNRI and BeOpen terms
+   included.
+2. **A brief summary of the changes** (§3). The PSF license asks it of anyone who
+   makes a derivative work available, and a CPython built with patches is one:
+   the registry port's patches and the five added here
+   (`cmake/vcpkg-ports/README.md` describes ours, each with its reason, and the
+   port's other patches are named in its `portfile.cmake`). Shipping that README,
+   or a paragraph made from it, discharges this.
+3. **The notices of what CPython incorporates.** CPython's own source contains
+   third-party code under other permissive terms, listed in CPython's
+   documentation, "Licenses and Acknowledgements for Incorporated Software", for
+   the version you ship. vcpkg's `copyright` file does not include that list;
+   take it from the documentation of 3.14.7. (libmpdec, which 3.12's `_decimal`
+   compiled in from CPython's tree, is a library of its own now - below.)
+4. **The nine libraries linked beside it**, each from its own `copyright` file
+   under `share/<port>/` in the same vcpkg prefix:
+   - **OpenSSL 3, Apache-2.0**: include the licence text; §4 also asks that a
+     `NOTICE` file, where the work has one, be passed on.
+   - **libffi, MIT** and **expat, MIT**: the copyright notice and permission
+     notice.
+   - **bzip2** and **zlib**: nothing is required in a binary distribution - both
+     ask only that source be kept with its notice and altered source be marked -
+     and an acknowledgement in the documentation is appreciated.
+   - **libmpdec, BSD-2-Clause** and **zstd, BSD-3-Clause**: the copyright
+     notice, the conditions and the disclaimer. (zstd's `copyright` file carries
+     its GPLv2 alternative too; the BSD terms are the ones that apply here.)
+   - **liblzma (xz), 0BSD**: nothing is required.
+   - **SQLite, public domain**: nothing is required.
+
+   Only the ones actually linked apply, and a program built from this tree links
+   all nine: `_unibind_provide_python` names whichever the prefix holds.
+
+None of it asks for your source, and none of it restricts how you licence your
+own work.
+
 ### Either way
 
 `unibind` itself adds one line to your notice file - the MIT text above with its
@@ -117,8 +195,10 @@ copyright line - and nothing else.
 
 - **It ships no engine binary and no engine source**, so it triggers none of
   the obligations above by itself. That is a licensing property as much as a
-  practical one, and it is why an engine is fetched into `dependencies/` rather
-  than vendored into the tree.
+  practical one, and it is why an engine is fetched into `dependencies/`, or
+  built by vcpkg, rather than vendored into the tree. The one qualification is
+  the CPython port's patch files, which quote CPython's source as diff context
+  under its own licence.
 - **It expresses no opinion on which engine you should ship.** The licences
   differ, the obligations differ, and that is now a thing you can decide at
   build time with `-DUNIBIND_BACKEND=`.

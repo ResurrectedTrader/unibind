@@ -19,14 +19,23 @@
 
   Properties a consumer may set before the import:
 
-    UnibindBackend          v8 | spidermonkey. Defaults to whichever this
-                            prefix holds, and to v8 when it holds both.
+    UnibindBackend          v8 | spidermonkey | python. Defaults to whichever
+                            this prefix holds, preferring them in that order.
     UnibindRoot             the installed prefix. Defaults to this file's
                             parent, so it is normally not set at all.
     UnibindV8Dir            prebuilt V8: a directory holding include/ and
                             v8_monolith.lib.
     UnibindSpiderMonkeyDir  prebuilt SpiderMonkey: a directory holding include/
                             and spidermonkey.lib.
+    UnibindPythonDir        static CPython in vcpkg's installed layout - the
+                            x64-windows-static or x86-windows-static triplet
+                            directory, with lib/, debug/lib/ and
+                            tools/python3/Lib. Which libraries under it are
+                            linked is recorded in unibind-engine-python.props.
+                            The pure-Python standard library is compiled into
+                            unibind_backend_python.lib, so a program needs
+                            nothing of it at run time; docs/python.md section
+                            10.3 says where it comes from and what overrides it.
 
   The engine defaults are the paths this prefix was built against - one small
   unibind-engine-<backend>.props per backend installed, imported by wildcard
@@ -53,6 +62,7 @@
     -->
     <UnibindBackend Condition="'$(UnibindBackend)' == '' and Exists('$(UnibindRoot)lib\unibind_backend_v8.lib')">v8</UnibindBackend>
     <UnibindBackend Condition="'$(UnibindBackend)' == '' and Exists('$(UnibindRoot)lib\unibind_backend_spidermonkey.lib')">spidermonkey</UnibindBackend>
+    <UnibindBackend Condition="'$(UnibindBackend)' == '' and Exists('$(UnibindRoot)lib\unibind_backend_python.lib')">python</UnibindBackend>
     <UnibindBackend Condition="'$(UnibindBackend)' == ''">@UNIBIND_BACKEND@</UnibindBackend>
     <!--
       The architecture this prefix was installed for, and the MSBuild platform
@@ -96,7 +106,26 @@
     <UnibindEngineSystemLibs>mincore.lib;ws2_32.lib;advapi32.lib;user32.lib;ole32.lib;oleaut32.lib;shell32.lib;userenv.lib;bcrypt.lib;ntdll.lib;dbghelp.lib;psapi.lib;winmm.lib;shlwapi.lib</UnibindEngineSystemLibs>
   </PropertyGroup>
 
+  <!--
+    CPython is one library plus the third-party ones its built-in extension
+    modules call (zlib, OpenSSL, libffi, ...), and a Debug build links the debug
+    builds of all of them - so the list comes from the engine fragment, one per
+    CRT flavour, relative to UnibindPythonDir. The first entry is the engine
+    itself, which is what the environment check looks for.
+  -->
+  <PropertyGroup Label="unibind backend" Condition="'$(UnibindBackend)' == 'python'">
+    <UnibindEngineDir>$([MSBuild]::EnsureTrailingSlash($(UnibindPythonDir)))</UnibindEngineDir>
+    <UnibindPythonSelected Condition="'$(UseDebugLibraries)' == 'true'">$(UnibindPythonDebugLibs)</UnibindPythonSelected>
+    <UnibindPythonSelected Condition="'$(UseDebugLibraries)' != 'true'">$(UnibindPythonLibs)</UnibindPythonSelected>
+    <!-- Unescape: a property function's result is escaped, and the list's own
+         separators would otherwise reach the linker as one file name. -->
+    <UnibindEngineLib>$([MSBuild]::Unescape('$(UnibindEngineDir)$(UnibindPythonSelected.Replace(';', ';$(UnibindEngineDir)'))'))</UnibindEngineLib>
+    <UnibindEngineLibCheck>$(UnibindEngineDir)$(UnibindPythonSelected.Split(';')[0])</UnibindEngineLibCheck>
+    <UnibindEngineSystemLibs>version.lib;ws2_32.lib;shlwapi.lib;pathcch.lib;bcrypt.lib;advapi32.lib;user32.lib;kernel32.lib;ole32.lib;oleaut32.lib;iphlpapi.lib;rpcrt4.lib;crypt32.lib;winmm.lib;msi.lib;cabinet.lib;wbemuuid.lib;propsys.lib</UnibindEngineSystemLibs>
+  </PropertyGroup>
+
   <PropertyGroup Label="unibind derived">
+    <UnibindEngineLibCheck Condition="'$(UnibindEngineLibCheck)' == ''">$(UnibindEngineLib)</UnibindEngineLibCheck>
     <!--
       One include directory, holding the public headers and the generated
       config.h beside them. config.h describes the architecture, the handle
@@ -119,14 +148,14 @@
   </ItemDefinitionGroup>
 
   <Target Name="UnibindCheckEnvironment" BeforeTargets="ClCompile">
-    <Error Condition="'$(UnibindBackend)' != 'v8' and '$(UnibindBackend)' != 'spidermonkey'"
-           Text="unibind: UnibindBackend is '$(UnibindBackend)'; expected v8 or spidermonkey." />
+    <Error Condition="'$(UnibindBackend)' != 'v8' and '$(UnibindBackend)' != 'spidermonkey' and '$(UnibindBackend)' != 'python'"
+           Text="unibind: UnibindBackend is '$(UnibindBackend)'; expected v8, spidermonkey or python." />
     <Error Condition="!Exists('$(UnibindBackendLib)')"
            Text="unibind: no $(UnibindBackendLib). This prefix does not hold the '$(UnibindBackend)' backend - install that build tree into it, or set UnibindBackend to one it does hold." />
     <Error Condition="!Exists('$(UnibindIncludeDir)unibind\config.h')"
            Text="unibind: no $(UnibindIncludeDir)unibind\config.h. It is generated by the build and installed beside the public headers; a prefix without it is broken." />
-    <Error Condition="!Exists('$(UnibindEngineLib)')"
-           Text="unibind: no $(UnibindEngineLib). The engine is yours to supply: point UnibindV8Dir or UnibindSpiderMonkeyDir at a prebuilt $(UnibindArch) /MT engine tree." />
+    <Error Condition="!Exists('$(UnibindEngineLibCheck)')"
+           Text="unibind: no $(UnibindEngineLibCheck). The engine is yours to supply: point UnibindV8Dir, UnibindSpiderMonkeyDir or UnibindPythonDir at a prebuilt $(UnibindArch) /MT engine tree." />
     <Error Condition="'$(Platform)' != '$(UnibindPlatform)'"
            Text="unibind: Platform is '$(Platform)' but this prefix was installed for $(UnibindArch); build this project as $(UnibindPlatform), or import the prefix that was built for '$(Platform)'." />
     <!--

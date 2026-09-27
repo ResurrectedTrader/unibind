@@ -1,0 +1,31 @@
+diff --git a/PCbuild/pyproject.props b/PCbuild/pyproject.props
+index 53bfe5e..4e65f0d 100644
+--- a/PCbuild/pyproject.props
++++ b/PCbuild/pyproject.props
+@@ -67,7 +67,7 @@
+       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+       <CompileAs>Default</CompileAs>
+       <SuppressStartupBanner>true</SuppressStartupBanner>
+-      <WholeProgramOptimization>true</WholeProgramOptimization>
++      <WholeProgramOptimization Condition="'$(WholeProgramOptimization)' != 'false'">true</WholeProgramOptimization>
+       <ControlFlowGuard Condition="$(EnableControlFlowGuard) != ''">$(EnableControlFlowGuard)</ControlFlowGuard>
+       <MultiProcessorCompilation>true</MultiProcessorCompilation>
+       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+@@ -97,7 +97,7 @@
+       <TargetMachine Condition="'$(Platform)' == 'x64'">MachineX64</TargetMachine>
+       <TargetMachine Condition="'$(Platform)'=='ARM'">MachineARM</TargetMachine>
+       <TargetMachine Condition="'$(Platform)'=='ARM64'">MachineARM64</TargetMachine>
+-      <LinkTimeCodeGeneration Condition="$(Configuration) != 'Debug'">UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
++      <LinkTimeCodeGeneration Condition="$(Configuration) != 'Debug' and '$(WholeProgramOptimization)' != 'false'">UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
+       <AdditionalDependencies>advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+       <AdditionalOptions Condition="$(Configuration) != 'Debug'">/OPT:REF,NOICF %(AdditionalOptions)</AdditionalOptions>
+       <AdditionalOptions Condition="$(MSVCHasBrokenARM64Clamping) == 'true' and $(Platform) == 'ARM64'">-d2:-pattern-opt-disable:-932189325 %(AdditionalOptions)</AdditionalOptions>
+@@ -106,7 +106,7 @@
+     </Link>
+     <Lib>
+       <LinkTimeCodeGeneration>false</LinkTimeCodeGeneration>
+-      <LinkTimeCodeGeneration Condition="$(Configuration) != 'Debug'">true</LinkTimeCodeGeneration>
++      <LinkTimeCodeGeneration Condition="$(Configuration) != 'Debug' and '$(WholeProgramOptimization)' != 'false'">true</LinkTimeCodeGeneration>
+     </Lib>
+     <ResourceCompile>
+       <AdditionalIncludeDirectories>$(PySourcePath)PC;$(PySourcePath)Include;$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>

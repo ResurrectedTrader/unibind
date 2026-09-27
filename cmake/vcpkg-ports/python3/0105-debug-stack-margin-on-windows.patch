@@ -1,0 +1,24 @@
+diff --git a/Include/internal/pycore_pythonrun.h b/Include/internal/pycore_pythonrun.h
+index 5dd93bd..c036292 100644
+--- a/Include/internal/pycore_pythonrun.h
++++ b/Include/internal/pycore_pythonrun.h
+@@ -39,7 +39,18 @@ extern PyObject* _PyRun_SimpleString(
+  * no two calls to check recursion depth are more than this far
+  * apart. In practice, that means it must be larger than the C
+  * stack consumption of PyEval_EvalDefault */
+-#if (defined(Py_DEBUG) \
++#if defined(Py_DEBUG) && defined(MS_WINDOWS)
++   /* vcpkg: MSVC's unoptimised (/Od) evaluation loop spends up to about 58 KB
++      of stack between two checks (x64) - more than the 32 KB margin below - so
++      a check could land past the hard limit, and a runaway recursion through C
++      was a fatal "Unrecoverable stack overflow" instead of a RecursionError.
++      64 KB on x64 and x86 alike. */
++#  if SIZEOF_VOID_P == 8
++#    define _PyOS_LOG2_STACK_MARGIN 13
++#  else
++#    define _PyOS_LOG2_STACK_MARGIN 14
++#  endif
++#elif (defined(Py_DEBUG) \
+      || defined(_Py_ADDRESS_SANITIZER) \
+      || defined(_Py_THREAD_SANITIZER))
+ #  define _PyOS_LOG2_STACK_MARGIN 12

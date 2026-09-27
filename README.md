@@ -1,9 +1,18 @@
 # unibind (`ub::`)
 
-One embedding API over several JavaScript engines, chosen at the link. You
-write against `ub::` and compile once; whether V8 or SpiderMonkey is underneath
-is decided by which library you link, and nothing in your code - or in what it
-compiled to - says which.
+One embedding API over several script engines, chosen at the link. You write
+against `ub::` and compile once; whether V8, SpiderMonkey or CPython is
+underneath is decided by which library you link, and nothing in your code - or
+in what it compiled to - says which.
+
+**The scripts are the engine's language, and that is not abstracted.** V8 and
+SpiderMonkey run JavaScript; CPython runs Python. Your C++ - the classes,
+templates, interceptors, callbacks and pumps you bind - compiles once and links
+against any of the three. The *source text* you hand `ub::Evaluate` does not
+carry over: a JavaScript program's scripts run on either JavaScript backend
+unchanged, and on the CPython backend they are a `SyntaxError`. Choosing
+CPython is choosing Python as your scripting language, not a faster way to run
+the scripts you have.
 
 ```cpp
 const ub::Platform platform;                 // process-wide, once
@@ -12,44 +21,50 @@ const ub::HandleScope scope(*isolate);       // handles live here
 const auto context = ub::Context::New(*isolate);
 const ub::ContextScope entered(*context);
 
-const auto result = ub::Evaluate(*context, "1 + 1");
+const auto result = ub::Evaluate(*context, "1 + 1");   // JavaScript or Python: both say 2
 const int sum = result->To<ub::Integer>()->Int32Value();   // 2
 ```
 
 | | |
 |---|---|
 | Public API | complete: values, objects, accessors, interceptors, symbols, classes with native state, exceptions, realms, promises and jobs, termination, binary data, structured clone, compiled-code caching, engine-fault reporting, a Chrome DevTools inspector |
-| V8 15.6 | implements all of it |
-| SpiderMonkey 153.3.0esr | implements all of it except two things its engine does not have: the near-heap-limit hook - a call to that one does not link, on purpose - and the inspector, which links and answers `Supported()` with false |
-| Tests | one suite, written once against `ub::`: 418 cases, green on both backends, every case compared backend against backend with no divergences |
+| V8 15.6 | JavaScript. Implements all of it |
+| SpiderMonkey 153.3.0esr | JavaScript. Implements all of it except two things its engine does not have: the near-heap-limit hook - a call to that one does not link, on purpose - and the inspector, which links and answers `Supported()` with false |
+| CPython 3.14.7 | **Python.** Implements all of it except the inspector, which links and answers `Supported()` with false; its engine-fault reporting covers running out of heap and a failed bring-up, not a crash inside CPython. Where Python and JavaScript disagree - `None` is `undefined`, a missing attribute is an error to Python - the choice is written down in [`docs/python.md`](docs/python.md) |
+| Tests | the JavaScript suite, written once against `ub::`: 418 cases, green on both JavaScript backends, every case compared backend against backend with no divergences. The CPython backend has a suite of its own, written the same way with Python as the script language: 271 cases, plus one opt-in stress case |
 | Not here | cross-realm access control - see [Limits](#limits) |
 
 > **Read [`docs/gotchas.md`](docs/gotchas.md) before you lose a day to one of
-> them.** It is sixty-odd traps indexed by what you were doing when it bit you,
-> and it opens with thirteen you will not diagnose from the symptom: twelve
+> them.** It is ninety-odd traps indexed by what you were doing when it bit you,
+> and it opens with nineteen you will not diagnose from the symptom: eighteen
 > give a *wrong answer and no error at all* - a `TypeError` that arrives as a
 > `SyntaxError`, a cached blob that runs a different script than the one you
-> asked for, a promise continuation that simply never happens - and the
-> thirteenth gives a loud error that blames something else entirely. Ten
+> asked for, a promise continuation that simply never happens, an empty list
+> that a Python callback treats as false - and the
+> nineteenth gives a loud error that blames something else entirely. Ten
 > minutes there is the best-value reading in this repository.
 
-**The two engines do not have the same rules, and the stricter one is what this
-API is shaped by.** SpiderMonkey roots a GC value through `JS::Rooted`, which
+**The JavaScript engines do not have the same rules, and the stricter one is
+what this API is shaped by.** SpiderMonkey roots a GC value through `JS::Rooted`, which
 must live on the stack, must be destroyed in reverse order of construction, and
 cannot be moved or copied or put in a container - and its collector *moves* what
 it roots, so a value copied out of a root is not merely possibly-freed but
 possibly-stale. V8 has none of those rules. An abstraction only V8 could
 implement honestly would be worth nothing, so what is here is what both can
 implement honestly rather than what either would have designed alone - and the
-handle model is where that bites hardest.
+handle model is where that bites hardest. CPython, the third, refcounts and
+never moves anything, which is the other end of the same scale; the model took
+it without a change to a public header, and a frame there is simply an array of
+strong references.
 
 The rest of [`docs/`](docs/) is the design: [`lifetimes.md`](docs/lifetimes.md)
 for the handle model everything else follows from,
-[`status.md`](docs/status.md) for the twenty-nine decisions a backend author has
-to know, [`testing.md`](docs/testing.md) for where the two engines differ and
-what the suite asserts instead, [`spidermonkey.md`](docs/spidermonkey.md) for
-what writing the second backend cost, and
-[`licensing.md`](docs/licensing.md) for what you owe whom when you ship this.
+[`status.md`](docs/status.md) for the thirty-seven decisions a backend author has
+to know, [`testing.md`](docs/testing.md) for where the engines differ and
+what the suites assert instead, [`spidermonkey.md`](docs/spidermonkey.md) for
+what writing the second backend cost, [`python.md`](docs/python.md) for the
+third - a different language behind the same API, and everything that decided -
+and [`licensing.md`](docs/licensing.md) for what you owe whom when you ship this.
 
 ---
 
@@ -85,7 +100,7 @@ unibind is the abstraction, not the engine. A consumer brings:
 
 | | |
 |---|---|
-| **The engine** | a prebuilt static V8 (`include/` + `v8_monolith.lib`) or SpiderMonkey (`include/` + `spidermonkey.lib`), of the architecture you are building, which **you link yourself**. Building *this tree* no longer needs one - the build fetches the pinned version (see below) - but an installed prefix ships unibind's library and not the engine's, so a consumer supplies and links it. `unibind.props` and the CMake package already know the path the prefix was built against and the system libraries that go with it. See [`dependencies/README.md`](dependencies/README.md). |
+| **The engine** | a prebuilt static V8 (`include/` + `v8_monolith.lib`) or SpiderMonkey (`include/` + `spidermonkey.lib`), of the architecture you are building, which **you link yourself**. Building *this tree* no longer needs one - the build fetches the pinned version (see below) - but an installed prefix ships unibind's library and not the engine's, so a consumer supplies and links it. `unibind.props` and the CMake package already know the path the prefix was built against and the system libraries that go with it. See [`dependencies/README.md`](dependencies/README.md). CPython is the exception to where it comes from: vcpkg builds it, static and `/MT`, and its pure-Python standard library is compiled into the backend, so nothing of it is deployed beside the program; `UNIBIND_PYTHON_HOME` or a `python-stdlib` directory beside the executable overrides it ([`docs/python.md`](docs/python.md) section 10). |
 | **x86 (Win32) or x64** | both, built and tested. A prefix is installed for one of them: the library, the engine and the generated `config.h` all have to agree, and `config.h` names the architecture in the ABI tag so that mixing them is LNK2038 rather than corruption. The *engine* is the choice that is not baked in - your objects link against either backend. |
 | **The static CRT** | `/MT`, or `/MTd` against a debug engine tree. The engines link it; a `/MD` consumer fails at link with the MSVC STL's own `RuntimeLibrary` mismatch. |
 | **MSVC toolset 14.44 or newer** | SpiderMonkey's floor, not a preference: its STL headers call helpers that ship in that toolset's `libcpmt.lib`, and an older one fails with undefined `__std_*`. The V8 tree here is built the same way. |
@@ -105,9 +120,9 @@ cmake --build build/v8 --config Release --parallel 1
 ctest --preset v8
 ```
 
-Four presets, one per engine and architecture: `v8`, `spidermonkey`, `v8-x64`
-and `spidermonkey-x64`. The unsuffixed ones are x86, which is what everything
-here was first measured in.
+Six presets, one per engine and architecture: `v8`, `spidermonkey`, `python`,
+`v8-x64`, `spidermonkey-x64` and `python-x64`. The unsuffixed ones are x86,
+which is what everything here was first measured in.
 
 A fresh clone builds with nothing placed by hand. Configuring fetches the
 pinned engine build into `dependencies/` when one is not already there - a
@@ -125,6 +140,38 @@ to refuse the fetch outright and be told what to unpack where.
 bump repoints the tag, the asset and the directory together rather than
 silently reusing the old library.
 
+### The CPython backend
+
+```powershell
+$env:VCPKG_ROOT = "C:\path\to\vcpkg"
+cmake --preset python-x64                          # or --preset python
+cmake --build build/python-x64 --config Release --parallel 1
+ctest --preset python-x64
+```
+
+Nothing is downloaded into `dependencies/` for this one. CPython comes from
+vcpkg - the `python` feature of `vcpkg.json`, which the root `CMakeLists.txt`
+turns on only for this backend, through an overlay port in `cmake/vcpkg-ports/`
+that builds it as a static `/MT` library with the standard library's extension
+modules compiled in. **The first configure of a triplet builds CPython from
+source**, and with it OpenSSL, libffi, SQLite, expat, liblzma and bzip2: about
+twenty minutes on a 32-thread machine, nearly all of it OpenSSL and libffi, and
+longer on a smaller one. After that vcpkg's binary cache makes it seconds.
+`-DUNIBIND_PYTHON_DIR=...` points at a static CPython you already have, with
+vcpkg's installed layout, and vcpkg is then not asked for one.
+
+CPython's pure-Python standard library (`Lib/`) is compiled into the backend as
+well: the build byte-compiles it with vcpkg's own interpreter for the triplet and
+embeds it as CPython's frozen-module table, so **the built program is one
+executable with nothing to ship beside it**. A directory still wins when there is
+one, so that a developer can run against sources on disk: `UNIBIND_PYTHON_HOME`,
+or a `python-stdlib` directory beside the executable.
+`-DUNIBIND_PYTHON_EMBED_STDLIB=OFF` reads `Lib/` from disk instead ([`docs/python.md`](docs/python.md) section 10.3).
+
+This preset also builds [`examples/python_repl`](examples/python_repl/README.md),
+an interactive Python prompt whose host bindings exercise most of the binding
+API; `ctest -L example` runs its checks.
+
 The number `ctest` prints is a little larger than 418 and depends on the tree,
 because it registers the suite's cases *and* a few things that cannot be cases
 among others: the whole suite again in one process, four checks that each need
@@ -136,18 +183,31 @@ what the test binary itself reports, on either backend. The assertion count is n
 different number of times on each engine, so V8 counts 10999 and SpiderMonkey
 10472, and neither number is the one to compare a run against.
 
+The CPython backend does not run that suite: its cases are JavaScript source as
+much as C++, and the parity comparison leaves this backend out. It runs
+`tests/python/` instead - **271 cases**, the figure `unibind_python_tests.exe`
+reports, registered with CTest one per case under `python.` plus the whole suite
+in one process and two runs of the embedded standard library's cases out of
+process, one opt-in stress case that runs only when asked for by name, seven
+more tests for the example REPL under the label `example`, and the benchmark,
+under the label `benchmark`, which the other backends register too. [`tests/python/README.md`](tests/python/README.md) says what it covers.
+
 CI pins `windows-2022` and MSVC **14.44** on purpose: that is the toolset both
 engine archives were built with, and therefore the one a consumer links
 against. Following `windows-latest` would test a toolchain nobody chose. A
 non-blocking canary does build on `windows-latest` - Visual Studio 2026, MSVC
 14.51 - and currently passes, which is how the pin will eventually be moved.
 
-Each engine's workflow runs the suite three times, as separate jobs: x86 and x64
+One workflow, `engines.yml`, runs every engine's suite, a section per engine.
+Each JavaScript engine's suite runs three times, as separate jobs: x86 and x64
 in Release, because the handle is a different size in the two, the backends'
 frames are different sizes, and the x64 V8 archive brings a different
 allocator - so one of them passing says nothing about the other; and x86 in
 Debug against the engine's debug build, whose assertions have caught backend
 bugs no release engine reports (`docs/testing.md`).
+
+The CPython backend's jobs run its suite and the example's checks the same
+way - x64 and x86 in Release, and x64 in Debug against a debug CPython.
 
 Then install a prefix for consumers:
 
@@ -179,6 +239,15 @@ than documented - `unibind.props` and `find_package(unibind)` both check, and th
 generated `config.h` carries the architecture in its ABI tag, so an object that
 got past both fails to link.
 
+A python prefix installs the same way (`cmake --install build/python-x64 ...`)
+and adds `lib\unibind_backend_python.lib`. Like the other two it does not copy
+the engine: its package file names the vcpkg prefix the build used - by default
+`build/python-x64/vcpkg_installed/x64-windows-static`, inside the build tree - for
+`python314.lib` and the eight libraries beside it, and `UNIBIND_PYTHON_DIR`
+relocates it. The pure-Python standard library is in
+`unibind_backend_python.lib` itself, so a program linked against the prefix needs
+no `Lib/` either.
+
 ## Using it from your project
 
 You do not have to build this tree to use it. Every `vX.Y.Z` tag publishes a
@@ -191,7 +260,9 @@ names the engine versions those libraries were compiled against. The engines are
 not included: fetch the matching ones from the releases that
 `cmake/UnibindEngines.cmake` names, and point `UnibindV8Dir` /
 `UnibindSpiderMonkeyDir` (or `UNIBIND_V8_DIR` / `UNIBIND_SPIDERMONKEY_DIR`) at
-them. The `debug` flavor links the engines' debug builds and `/MTd`.
+them. The `debug` flavor links the engines' debug builds and `/MTd`. The
+published archives hold the two JavaScript backends; a prefix with the CPython
+backend is built from this tree.
 
 ### MSBuild (`.vcxproj`)
 
@@ -213,9 +284,9 @@ Properties you may set before the import:
 
 | | |
 |---|---|
-| `UnibindBackend` | `v8` or `spidermonkey`. Defaults to whichever the prefix holds, and to `v8` when it holds both. |
+| `UnibindBackend` | `v8`, `spidermonkey` or `python`. Defaults to whichever the prefix holds, preferring them in that order. |
 | `UnibindRoot` | the prefix. Defaults to the props file's own parent, so normally unset. |
-| `UnibindV8Dir`, `UnibindSpiderMonkeyDir` | where your engine lives. Defaults to what the prefix was built against. |
+| `UnibindV8Dir`, `UnibindSpiderMonkeyDir`, `UnibindPythonDir` | where your engine lives - for CPython, vcpkg's installed triplet directory. Defaults to what the prefix was built against. |
 
 Your project still has to say three things for itself, because they are decided
 before any property sheet is imported: the `Platform` the prefix was installed
@@ -229,19 +300,19 @@ ways, against a prefix you installed.
 ### CMake
 
 ```cmake
-find_package(unibind REQUIRED)            # or COMPONENTS spidermonkey
+find_package(unibind REQUIRED)            # or COMPONENTS spidermonkey, or python
 target_link_libraries(app PRIVATE unibind::unibind)
 ```
 
-`UNIBIND_V8_DIR` / `UNIBIND_SPIDERMONKEY_DIR` relocate the engine if the prefix was
-moved to a machine where it lives elsewhere.
+`UNIBIND_V8_DIR` / `UNIBIND_SPIDERMONKEY_DIR` / `UNIBIND_PYTHON_DIR` relocate the
+engine if the prefix was moved to a machine where it lives elsewhere.
 
-Three targets, and the split is what makes one compile serve both engines:
+Three targets, and the split is what makes one compile serve every engine:
 
 | | |
 |---|---|
 | `unibind::headers` | the public headers and `config.h`. Names no engine. |
-| `unibind::backend_v8`, `unibind::backend_spidermonkey` | one engine, as a link input. One per backend the prefix holds. |
+| `unibind::backend_v8`, `unibind::backend_spidermonkey`, `unibind::backend_python` | one engine, as a link input. One per backend the prefix holds. |
 | `unibind::unibind` | the headers plus one backend - what a program that links one engine wants, and the only one most consumers name. |
 
 ```cmake
@@ -306,6 +377,14 @@ pump. Escaping a handle (section 2), interceptors (section 7) and termination
 ```
 
 There is one header. Everything is in `namespace ub`.
+
+The script source below is JavaScript, because two of the three engines run
+it. On the CPython backend every line of C++ here is unchanged and the strings
+handed to `Evaluate` are Python - `"40 + 2"` happens to be both.
+[`examples/python_repl/host.cpp`](examples/python_repl/host.cpp) is most of this
+tour bound for Python scripts, and [`docs/python.md`](docs/python.md) is where
+the two languages' semantics meet: what `undefined`, a prototype, a promise and
+`new` turn into there.
 
 Section 1 makes an isolate and a realm, so it spells them `*isolate` and
 `*context` - the one is a `std::unique_ptr`, the other a `std::optional`. Every
@@ -1022,10 +1101,13 @@ what you return. Raise the ceiling and terminate together - a bigger heap alone
 just feeds the runaway script, and a stop alone has no room to unwind in - and
 one bad script stops instead of the process ending.
 
-**Only V8 has this hook, and a SpiderMonkey build does not link a call to it.**
-That is this library's standing answer for an operation an engine cannot do: a
-build error at your call site, not a field that compiles everywhere and fires in
-half the builds.
+**V8 has this hook and SpiderMonkey does not, so a SpiderMonkey build does not
+link a call to it.** That is this library's standing answer for an operation an
+engine cannot do: a build error at your call site, not a field that compiles
+everywhere and fires in half the builds. The CPython backend has it too - built
+on allocator hooks rather than found in the engine, since CPython has no heap
+limit of its own - and there the refused allocation is a `MemoryError` the
+script can catch.
 
 ### 11. Chrome DevTools
 
@@ -1177,11 +1259,108 @@ non-LTO-compiled static library and the engine's own archives under `lld-link`,
 and the result runs. What you do not get from that is inlining *across* the
 boundary, which is the whole point of turning it on.
 
+### The three engines against each other
+
+`unibind_bench` is built for every backend and runs the same workloads on
+whichever engine it links. Script-side rows time one `Evaluate` of a loop and
+report per iteration; the loop is the one engine-dependent thing, a JavaScript
+and a Python source per row. C++-side rows are the API called from C++.
+`cmake -P tests/bench/Compare.cmake` runs all three and prints these tables.
+
+**Measured on** an AMD Ryzen 9 9950X3D (16 cores, 32 threads), 96 GB DDR5-4800,
+Windows 11 Pro build 26200, the Ultimate Performance power plan; x64 Release,
+clang-cl 19.1.5 at `/O2`, no LTO; V8 15.6.8, SpiderMonkey 153.3.0esr, CPython
+3.14.7. **The absolute numbers are this machine's. The ratios are the point.**
+Each figure is the median of three runs per engine, interleaved, each run itself
+the median of five timings of about 150 ms after a calibration and a warm-up.
+All nine runs were clean: no compiler, linker or clang-tidy ran, and no other
+process used more than 1.5 cores, with any run that broke that redone. An IDE's
+profiler service used about one core throughout. From one run to the next the
+pure-script rows moved by a few percent, and rows that call into C++ or allocate
+by up to a third, which is what the median over runs is for.
+
+"Net" is the row less the empty loop: the operation without the loop around it.
+`<0.5` means the JIT took the operation out of the loop (see below).
+
+| script-side, ns per iteration | V8 | SpiderMonkey | CPython | V8 net | SpiderMonkey net | CPython net | CPython ÷ V8 | CPython ÷ SpiderMonkey |
+|---|--:|--:|--:|--:|--:|--:|--:|--:|
+| empty loop (baseline) | 0.24 | 0.26 | 15.7 |  |  |  | 66× | 60× |
+| read a property of a script object | 0.24 | 0.27 | 17.0 | <0.5 | <0.5 | 1.30 | 70× | 64× |
+| write a property of a script object | 0.33 | 0.52 | 18.9 | <0.5 | <0.5 | 3.20 | 57× | 37× |
+| read a property of an Object::New object | 0.27 | 0.31 | 41.0 | <0.5 | <0.5 | 25.3 | 150× | 134× |
+| call a script function | 0.30 | 0.32 | 30.4 | <0.5 | <0.5 | 14.7 | 100× | 96× |
+| read a native accessor (Class<T>) | 77.8 | 32.9 | 96.6 | 77.6 | 32.6 | 80.9 | 1.2× | 2.9× |
+| call a native method (Class<T>) | 70.2 | 35.7 | 116.3 | 70.0 | 35.4 | 100.7 | 1.7× | 3.3× |
+| call a native function | 55.1 | 46.0 | 74.5 | 54.9 | 45.7 | 58.8 | 1.4× | 1.6× |
+| read through a named interceptor | 48.0 | 32.1 | 76.6 | 47.8 | 31.8 | 60.9 | 1.6× | 2.4× |
+| construct a native class instance | 737.5 | 720.6 | 422.4 | 737.3 | 720.3 | 406.8 | 0.6× | 0.6× |
+| read an array element (a[i & 7]) | 0.45 | 0.50 | 23.9 | <0.5 | <0.5 | 8.21 | 53× | 47× |
+| read a property of one of 8 script objects (a[i & 7].x) | 0.69 | 0.87 | 28.4 | <0.5 | 0.61 | 12.7 | 41× | 33× |
+| read a typed array element (a[i & 7]) | 0.37 | 0.38 | 31.3 | <0.5 | <0.5 | 15.7 | 84× | 84× |
+| append to a string (a new one every 1024) | 4.42 | 2.39 | 81.3 | 4.18 | 2.13 | 65.7 | 18× | 34× |
+| JSON.stringify / json.dumps of a small object | 123.5 | 170.2 | 1,698 | 123.3 | 169.9 | 1,683 | 14× | 10× |
+
+| C++-side, ns per operation | V8 | SpiderMonkey | CPython | CPython ÷ V8 | CPython ÷ SpiderMonkey |
+|---|--:|--:|--:|--:|--:|
+| Object::New | 69.9 | 14.2 | 39.3 | 0.6× | 2.8× |
+| Object::Get of an Object::New object by key handle | 91.0 | 47.0 | 32.3 | 0.4× | 0.7× |
+| Object::Get of an Object::New object by string_view | 198.5 | 66.3 | 67.5 | 0.3× | 1.0× |
+| Object::Get of a script object by key handle | 87.1 | 46.0 | 33.5 | 0.4× | 0.7× |
+| Object::Set of an Object::New object by key handle | 126.3 | 51.0 | 34.7 | 0.3× | 0.7× |
+| Function::Call of a native function | 134.1 | 64.0 | 43.2 | 0.3× | 0.7× |
+| Function::Call of a script function | 150.7 | 84.1 | 85.4 | 0.6× | 1.0× |
+| Evaluate("1 + 1") - compile and run | 989.7 | 2,409 | 13,484 | 14× | 5.6× |
+| Script::Run of "1 + 1" compiled once | 350.3 | 45.7 | 134.4 | 0.4× | 2.9× |
+| Context::New + destroy | 236,593 | 358,716 | 496.3 | 0.002× | 0.001× |
+| open and close a HandleScope | 5.23 | 3.04 | 3.05 | 0.6× | 1.0× |
+| create a handle | 13.4 | 9.00 | 26.0 | 1.9× | 2.9× |
+| read a handle | 3.57 | 1.91 | 3.24 | 0.9× | 1.7× |
+| escape a handle | 32.0 | 22.1 | 28.1 | 0.9× | 1.3× |
+| create and release a Global | 62.7 | 30.0 | 24.0 | 0.4× | 0.8× |
+| Isolate::New + destroy | 648,175 | 4,116,700 | 51,500,150 | 80× | 13× |
+
+How to read it, in three parts:
+
+- **Script doing its own work, CPython is 30-150 times slower**, and that is
+  the engines, not the binding. V8 and SpiderMonkey compile a hot loop to
+  machine code: 0.24 ns an iteration is about one clock cycle, and a
+  loop-invariant property read or a small function call leaves the loop
+  altogether (the `<0.5` entries). CPython interprets bytecode, and one pass
+  round the empty loop, at 15.7 ns, costs more than most of the operations
+  measured. The one-of-eight-objects row keeps a property read the JIT cannot
+  hoist: under a nanosecond on either JavaScript engine, 4.5 ns more than the
+  plain array row in CPython.
+- **Crossing into C++, CPython is 1.2-3.3 times slower**, because there the
+  JIT has nothing to offer: every engine goes through the binding's callback
+  path, and that cost dominates. SpiderMonkey is the quickest at it. CPython is
+  *faster* at constructing a native instance, because a reference count frees it
+  on the spot, where the JavaScript engines pay for a finalizable object and
+  its collection.
+- **The C++ API itself costs about the same on all three**, and CPython is often
+  the quickest: `Get`, `Set` and `Call` on CPython are direct C calls on
+  reference-counted objects, where every call into V8's public API - which the
+  V8 backend makes and nothing more - sets up VM state, a call-depth scope and
+  a handle scope of its own before doing the work. Its outliers are compiling (`Evaluate`, 14 times
+  V8, which caches compilations), making a handle (an `incref` as well as a
+  frame append), and an isolate (51 ms, a whole sub-interpreter). A realm, a
+  dictionary, costs 500 ns against a JavaScript global's quarter of a
+  millisecond.
+
+**What the JIT rows do and do not say.** A tight loop is the best case for a
+JIT, which may optimise it well past what real code gets, or remove the
+operation entirely. Every loop returns a value the program checks, so nothing
+was dead-code eliminated, but "`<0.5`" does mean the work left the loop. A cold
+path runs in V8's and SpiderMonkey's interpreters, which is nearer CPython's
+figures. The construct row is also the collector's, and the noisiest: one timing
+to the next varied up to fourfold on SpiderMonkey. [`docs/python.md`](docs/python.md)
+section 14 has the longer reading, and what each backend does on the rows that
+stand out.
+
 ## Gotchas worth knowing before you start
 
-[`docs/gotchas.md`](docs/gotchas.md) is the collection - sixty-odd of them,
-grouped by what you were doing, and opening with the thirteen you will not
-diagnose from the symptom. Four belong here because they are about *getting the
+[`docs/gotchas.md`](docs/gotchas.md) is the collection - ninety-odd of them,
+grouped by what you were doing, and opening with the nineteen you will not
+diagnose from the symptom. Five belong here because they are about *getting the
 build to work at all*, which is where a new consumer meets them.
 
 **The 32-bit linker silently loses the engine.** An x86 MSBuild project takes the
@@ -1214,6 +1393,15 @@ headers replaces your `operator new` silently (`dependencies/README.md`). This
 tree's own test suite hits this; `tests/CMakeLists.txt` says what it does about
 it and why.
 
+**A CPython program takes a standard library directory over its own.** The
+pure-Python standard library is embedded in the backend, and a program needs
+nothing beside it - but `UNIBIND_PYTHON_HOME`, or a `python-stdlib` directory
+beside the executable, still wins, on a user's machine as on yours. One left
+pointing at another CPython's `Lib` gives the program another version's modules.
+Built with `UNIBIND_PYTHON_EMBED_STDLIB` off, the program instead reads `Lib/`
+from disk, last from the build tree, and runs where it was built and nowhere
+else until you ship `Lib/` beside it as `python-stdlib`.
+
 ## What the name claims
 
 The name does not say JavaScript, and most of the binding surface really is not
@@ -1225,11 +1413,23 @@ interceptors, which are `__getattr__`/`__setattr__` in Python and
 frame that gives back everything it took when it closes is exactly the shape a
 refcounted runtime wants a borrow to have.
 
-What would not carry is the JavaScript in the rest: realms, prototypes, symbol
-keys as a concept, and the microtask and promise model. Those are sections of
-this API rather than corners of it. So the name is a claim about the shape of
-the binding layer, and not a claim that a non-JavaScript backend is only a
-matter of writing one.
+That was a prediction when it was written here, and the CPython backend is the
+test of it. The binding layer carried whole: no public header changed, the
+handle model became an array of strong references, and a class, a template, an
+interceptor or a pump written for V8 binds the same way for Python.
+
+What this section said would not carry is where the work went, and none of it
+was free. Realms became globals dictionaries of one interpreter, so they share
+its modules and a realm is a namespace rather than a world. Prototypes became a
+`unibind.Object` that carries its own `[[Prototype]]` chain, and a template
+became a Python *type* per realm, so that `isinstance`, subclassing and
+`super()` work. Symbol keys stand for Python's protocols where one exists. The
+promise model became an asyncio event loop that only `PumpJobs` drives. Each of
+those is a decision, and [`docs/python.md`](docs/python.md) makes all of them in
+the open - including the places where the two languages simply disagree and one
+had to be picked. So the name's claim held: it is about the shape of the binding
+layer. A non-JavaScript backend was not only a matter of writing one, and it
+turned out to be possible anyway.
 
 ## Limits
 
@@ -1239,7 +1439,9 @@ inspector - V8's inspector protocol, in this library's terms - and on
 SpiderMonkey `Inspector::Supported()` says no. Its debugging surface is the
 `Debugger` object, a JavaScript API installed into a debuggee realm, which
 speaks no protocol and has no C++ session to drive; a DevTools server over it
-would be a different and much larger thing than a backend. A program links
+would be a different and much larger thing than a backend. CPython's debugging
+surface is `sys.monitoring` and the debuggers built on it, which speak the Debug
+Adapter Protocol if they speak anything, and it says no too. A program links
 either way and asks at run time (decision 29).
 
 For anything else only V8 can do,
@@ -1247,36 +1449,59 @@ For anything else only V8 can do,
 objects (`ub::interop::V8Isolate`, `ub::interop::V8Context`). It is the one
 header whose functions only one backend defines: put the code that calls it in a
 library linked only into the V8 build, and link something else in its place for
-SpiderMonkey.
+the others.
 
 **Cross-realm access control is not expressible.** Two realms cannot be told to
 trust each other (V8 spells that as a shared security token; SpiderMonkey has
 compartments and principals, and the two do not describe the same thing), and a
 realm cannot be walled off from another. The portable answer is the rule in
 section 7: enter the realm that owns the object. It is a line per hook, and it is
-not a workaround for something you could otherwise ask for - you cannot ask.
+not a workaround for something you could otherwise ask for - you cannot ask. On
+the CPython backend a realm is walled off from even less: realms of one isolate
+share an interpreter, and so share `sys.modules` and `builtins`.
+
+**Python is not a sandbox.** A JavaScript engine starts with nothing but what
+you bind; CPython starts with the file system, sockets, processes and the whole
+standard library, and nothing an embedder binds or removes takes them away.
+Run only Python you would run as the host process itself, or contain the
+process with the operating system ([`docs/python.md`](docs/python.md) section 12).
+
+**An isolate costs tens of milliseconds to make.** CPython 3.14 gives an ended
+isolate's memory back (3.12 kept about 9 MB of each for good), but bringing an
+interpreter up is still work. Keep isolates for the life of a worker thread
+rather than making one per request.
+
+**A Python script's threads are second-class, and die with its isolate.** They
+share the isolate's GIL, so they run only while the isolate's thread is running
+Python or blocked in a call; they cannot call anything the embedder bound; a stop
+reaches them; and `~Isolate` stops them rather than wait for them to finish. One
+stuck in a call that never returns makes the isolate leave its interpreter behind
+([`docs/python.md`](docs/python.md) section 6.4).
 
 **No BigInt factory.** The type is recognised (`ValueKind::BigInt`,
 `Is<BigInt>()`) but native cannot make one. A `BigInt64Array` or
 `BigUint64Array` is still made and read in bulk, as `std::int64_t` and
 `std::uint64_t`, because that goes through its bytes and not through a BigInt.
 
-**A heap about to hit its ceiling can only be *asked about* on one engine.**
+**A heap about to hit its ceiling cannot be *asked about* on SpiderMonkey.**
 `Isolate::SetHeapLimitCallback` is V8's near-heap-limit hook and SpiderMonkey
 has nothing of the kind - not a different shape, nothing - so a call to it does
-not link there. Both engines still report the failure itself as
-`EngineFault::OutOfMemory`; what differs is whether you get asked first.
-`EngineFault::Fatal` needs no such caveat: SpiderMonkey has no hook for its
-`MOZ_CRASH`, so the backend recognises the crash itself.
+not link there. The CPython backend defines it, over allocator hooks of its own.
+All three still report the failure itself as `EngineFault::OutOfMemory`; what
+differs is whether you get asked first. `EngineFault::Fatal` needs no such
+caveat on the JavaScript engines: SpiderMonkey has no hook for its `MOZ_CRASH`,
+so the backend recognises the crash itself. CPython's `Py_FatalError` is not
+hooked, so on that backend `Fatal` arrives only for a bring-up that failed.
 
 **Not thread-safe, by contract.** Everything but `TerminateExecution`,
 `RequestInterrupt`, `PostJob`, `PostDelayedJob` and the inspector dispatcher's
 `RequestDispatch` happens on the isolate's own thread.
 
-**Windows only.** x86 and x64 are both built and tested, on both backends, and
-`CMakeLists.txt` refuses anything else rather than letting it fail later.
-Nothing in the *design* is Windows-specific; nothing has been built anywhere
-else.
+**Windows only.** x86 and x64 are both built and tested on both JavaScript
+backends, and `CMakeLists.txt` refuses anything else rather than letting it fail
+later. The CPython backend has presets for both and its suite passes on both,
+Release and Debug on x64 and Release on x86. Nothing in the *design* is Windows-specific; nothing
+has been built anywhere else.
 
 ## Layout
 
@@ -1284,17 +1509,24 @@ else.
 include/unibind/    the public API. No engine header, transitively, and no
                     mention of a backend either - both enforced by the
                     unibind_headers_only target, not by review
-src/backends/v8/    the V8 backend: one of the two places an engine header may appear
+src/backends/v8/    the V8 backend: one of the three places an engine header may appear
 src/backends/spidermonkey/
+src/backends/python/
 cmake/              UnibindEngines.cmake: fetching a published engine build, once
-                    per version, whole or not at all
+                    per version, whole or not at all - or, for CPython, finding
+                    what vcpkg built
+cmake/vcpkg-ports/  the overlay python3 port: a static CPython with the
+                    standard library's extension modules built in
 tools/headers_only/ compiles every public header alone, and instantiates the
                     whole template surface, with no engine on the include path;
                     backend_neutral.cmake is the half that has to be read
                     rather than compiled
 tests/              one suite, written against ub:: only, run against both
-                    backends and compared - see tests/README.md
-examples/           a consumer, built against an installed prefix
+                    JavaScript backends and compared - see tests/README.md
+tests/python/       the CPython backend's suite: the same discipline, Python
+                    as the script language - see tests/python/README.md
+examples/           embed: a consumer, built against an installed prefix;
+                    python_repl: a Python prompt over the CPython backend
 packaging/          unibind.props and the CMake package, for consumers
 docs/               decisions, including the ones that were rejected, and
                     gotchas.md, which is the one to read first
@@ -1302,8 +1534,12 @@ docs/               decisions, including the ones that were rejected, and
 
 ## License
 
-MIT - see [`LICENSE`](LICENSE). Nothing of either engine is in this repository;
-both are paths you point the build at. The engine you link has a license of its
-own, and the one to read is SpiderMonkey's MPL-2.0, which permits linking into a
-proprietary product and asks that the *engine's* source stay available.
-[`docs/licensing.md`](docs/licensing.md) says what that means in practice.
+MIT - see [`LICENSE`](LICENSE). No engine is in this repository: V8 and
+SpiderMonkey are paths you point the build at, and CPython is built by vcpkg -
+what is here of it is a vcpkg port and patches against its source. The engine
+you link has a license of its own. SpiderMonkey's MPL-2.0 is the one to read
+closely: it permits linking into a proprietary product and asks that the
+*engine's* source stay available. CPython's PSF license is permissive, but a
+program linked with this backend also carries OpenSSL, libffi, SQLite, expat,
+liblzma, bzip2 and zlib, and CPython's standard library compiled into it.
+[`docs/licensing.md`](docs/licensing.md) says what all of that means in practice.

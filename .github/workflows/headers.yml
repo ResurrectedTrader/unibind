@@ -21,8 +21,8 @@
 #
 # The image and the generator are pinned for the reason the engine jobs give at
 # length: `windows-latest` is Visual Studio 2026 now, and a toolchain that moves
-# on its own is a toolchain nobody decided on. The canary in v8.yml is what
-# reports that the ground has moved.
+# on its own is a toolchain nobody decided on. The V8 canary in engines.yml is
+# what reports that the ground has moved.
 
 name: headers
 

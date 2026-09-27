@@ -1,8 +1,10 @@
 # What is implemented
 
 The suite in `tests/` is written once, against the public API only, and runs
-against every built backend - `ctest -R parity` prints one row per case and a
-row that differs is the thing to look at.
+against every built JavaScript backend - `ctest -R parity` prints one row per
+case and a row that differs is the thing to look at. The CPython backend runs
+Python, so that suite's scripts mean nothing to it; it has `tests/python/`
+instead, and decision 30 says why that is the right shape rather than a gap.
 
 An operation that is declared but not defined is a **link error at the call
 site**, not a silent no-op or a runtime abort. That is now load-bearing rather
@@ -10,7 +12,7 @@ than incidental: it is how this API says "this engine cannot do that" - see
 decision 19, where the compiled-code cache is three entry points precisely so a
 backend without one can define none of them.
 
-**Where the two backends are.** Both implement everything the headers declare
+**Where the two JavaScript backends are.** Both implement everything the headers declare
 that their engines can do, decisions 1-29, and the suite agrees case for case:
 418 cases compared, **no divergences**. The single `SKIPPED | SKIPPED` row is the
 harness's own test of the skip path, which exists so that the machinery for
@@ -35,7 +37,13 @@ reports a skip where making one asked the allocator for nothing it could refuse.
 - V8 15.6: `src/backends/v8/`.
 - SpiderMonkey 153.3.0esr: `src/backends/spidermonkey/`. Its own notes - what
   had to bend, and what it measured - are in `docs/spidermonkey.md`, and they
-  are the better read for anyone writing a third backend.
+  are the better read for anyone writing a JavaScript backend.
+- CPython 3.14.7: `src/backends/python/`, and `docs/python.md` for the notes.
+  It defines every entry point decisions 1-29 declare, `SetHeapLimitCallback`
+  included; `Inspector::Supported()` is false there, as on SpiderMonkey, and
+  `unibind/interop/v8.h` is V8's alone. Its own suite is 271 cases, all green.
+  Decisions 30-37 are what a second *language* behind the API needed, and not
+  one of them changed a public header.
 
 **What compiles the public headers: clang, including clang-cl, and not MSVC's
 `cl.exe`.** That is a compiler bug rather than an API problem and it is written
@@ -46,7 +54,10 @@ build pins ClangCL.
 
 These are the places where the two engines wanted different things and the
 answer had to be picked rather than discovered. Each one is normative in a
-public header; this is the index, not the text.
+public header; this is the index, not the text. Decisions 30 on are the third
+engine's, where what disagreed was not two engines but two languages; those are
+normative in the CPython backend and in `docs/python.md`, since no header
+changed for them.
 
 ### 1. The callback return sink (`unibind/function.h`)
 
@@ -942,10 +953,10 @@ embedder whose policy changes changes it behind the fixed handler, through
 
 #### Which kinds each backend can actually raise, and the one that is nobody's
 
-| kind | V8 | SpiderMonkey |
-|---|---|---|
-| `OutOfMemory` | `Isolate::SetOOMErrorHandler`, plus the library's own frame exhaustion | `JS::SetOutOfMemoryCallback`, which every internal out-of-memory funnels through - frame exhaustion included, because the backend already reports that one through `JS_ReportOutOfMemory` |
-| `Fatal` | `Isolate::SetFatalErrorHandler`, `V8::SetFatalErrorHandler`, and `V8::SetDcheckErrorHandler` | `MOZ_CRASH` (so every `MOZ_RELEASE_ASSERT`, and a debug engine's `MOZ_ASSERT`), recognised by a vectored exception handler |
+| kind | V8 | SpiderMonkey | CPython |
+|---|---|---|---|
+| `OutOfMemory` | `Isolate::SetOOMErrorHandler`, plus the library's own frame exhaustion | `JS::SetOutOfMemoryCallback`, which every internal out-of-memory funnels through - frame exhaustion included, because the backend already reports that one through `JS_ReportOutOfMemory` | the backend's own allocator hooks refusing an allocation at `heapLimitBytes` (decision 37), once per crossing |
+| `Fatal` | `Isolate::SetFatalErrorHandler`, `V8::SetFatalErrorHandler`, and `V8::SetDcheckErrorHandler` | `MOZ_CRASH` (so every `MOZ_RELEASE_ASSERT`, and a debug engine's `MOZ_ASSERT`), recognised by a vectored exception handler | a failed bring-up only - no standard library (possible only with it not embedded), or `Py_InitializeFromConfig` failing - and the process is not ended: the `Platform` is left uninitialised. `Py_FatalError` is not hooked |
 
 SpiderMonkey's fatal path has no embedder hook, but it does not have to have one.
 `mozilla/Assertions.h` fixes what `MOZ_CRASH` does on Windows - store the reason
@@ -1098,6 +1109,200 @@ These had to be decided on top of V8's shape:
 the one header whose functions only one backend defines. The inspector no longer
 needs it.
 
+### 30. A backend's scripts are its engine's language (`docs/python.md`)
+
+The CPython backend runs Python. What `ub::` abstracts is the *binding layer* -
+values, handles, objects, classes, templates, interceptors, exceptions, realms,
+jobs - and that compiles once and links against every backend. What it does not
+abstract, and cannot, is the source text handed to `Evaluate`, `Script::Compile`
+and `CompileWithCache`. So a program's C++ carries over and its scripts do not.
+
+Three consequences, each decided rather than drifted into:
+
+- **The shared suite does not run on this backend, and parity leaves it out.**
+  `tests/cases/` is JavaScript source as much as C++; running it here would be
+  a wall of syntax errors, and "translating" it would be a second suite
+  pretending to be the first. `tests/python/` is written the same way - `ub::` only, no engine
+  header, Python as the script language - and `tests/cmake/RunParity.cmake` skips
+  the python directory by name.
+- **No public header changed.** No signature, no rule and no storage budget:
+  the frame, the `TryCatch` and the `ContextScope` all fit the sizes the two
+  JavaScript engines had already set. The backend-neutrality check needed
+  nothing either. That is the strongest evidence yet that the API is a design
+  rather than a description of V8.
+- **Where the two languages disagree, the rule is per spelling.** An operation
+  the API promises to C++ keeps the promise as V8 keeps it; a Python spelling of
+  the same thing - `o.x`, `del o[k]`, `len(o)` - keeps Python's meaning, because a
+  Python programmer is the one reading it. Decision 33 is that rule applied.
+
+### 31. An isolate is a sub-interpreter with its own GIL (`docs/python.md`)
+
+`Isolate::New` is `Py_NewInterpreterFromConfig` with `OWN_GIL`, its own object
+allocator, no fork or exec, threads but no daemon threads, and
+`check_multi_interp_extensions` on; the thread state it comes with stays attached
+to the calling thread until `~Isolate`. So no operation takes a GIL on the way in -
+the only thread allowed to call one holds it already - and isolates on different
+threads run Python in parallel. Decision 11, one isolate per thread, is what this
+needed anyway, arrived at from the other side.
+
+`Platform` initialises the **main** interpreter, isolated from the environment,
+and then detaches it: it owns the process-wide machinery and never runs a
+script. A realm is a globals dictionary in the isolate's interpreter, which is
+what CPython can offer - and it means **realms of one isolate share `sys.modules`
+and `builtins`**. On the JavaScript engines a realm has its own built-ins; here
+two sandboxes that must not see each other's module state are two isolates.
+
+**The dictionary is script's, so the backend keeps nothing in it.** A realm's
+record is ended by a dictionary watcher when the dictionary is deallocated, not
+by anything stored under one of its keys: the first version hung the record on a
+capsule in the globals, and `globals().clear()` freed it while a `Context` still
+named the realm, while `dict(globals())` kept it alive past its dictionary so
+that the next dictionary allocated at that address inherited the wrong realm.
+
+The standard library's extension modules that keep state in C globals are
+refused in such an interpreter, by CPython's own check - `ctypes` and XML parsing
+among them - and the pure-Python half of the library is read from disk when the
+`Platform` is made. Both are the engine's terms for being embedded this way, and
+`docs/python.md` section 10 is what they cost a program that ships.
+
+### 32. `undefined` is `None`; `null` is `unibind.null`; a Number is decided by value (`docs/python.md`)
+
+`undefined` had to be `None`: it is what a Python function with no `return`
+answers, what a missing argument reads as, and what a hole in a list is. `null`
+is then a singleton of the backend's own, falsy and distinct, because collapsing
+the two would make `IsNull` and `IsUndefined` a coin toss.
+
+A Number is an `int` when it is integral and within ±2^53 and a `float`
+otherwise, **whatever C++ type it was made from** - so a script can index, slice
+and `range()` with what a native returned - and `-0` stays a `float`. An `int`
+beyond ±2^53 is a `BigInt`, because a Number cannot hold it exactly. The
+alternative, a `float` for every `double`, would make every native that returns a
+count or an index return something Python refuses to index with.
+
+The coercions - `ToBoolean`, `ToString`, `ToNumber`, `LooseEquals` - are Python's
+where Python has one: `bool()`, `str()`, `float()`, `==`. A backend that
+reimplemented JavaScript's truthiness over Python values would disagree with every
+`if` in the scripts it runs, which is a worse surprise than disagreeing with V8.
+
+### 33. `unibind.Object`: JavaScript's semantics to C++, Python's to Python (`docs/python.md`)
+
+A Python object has attributes and items but no `[[Prototype]]`, no per-property
+attributes and nowhere for an accessor to run native code. `unibind.Object` is the
+object that has all of them, and everything `Object::New`, a template or a class
+makes is one. Property operations on anything else map onto what it already has:
+a dict's items, a list's indices and `length`, any other object's attributes.
+What those cannot carry - a `ReadOnly` item, an accessor on a dict - is refused,
+not faked.
+
+The rule from decision 30 decides every disagreement, and the list is in
+`docs/python.md` section 3. The ones that show: a missing property is `undefined`
+to C++ and `AttributeError`/`KeyError` to Python; a refused write answers true
+from C++ (V8's sloppy `Set`) and is a `TypeError` from Python, where there is no
+sloppy mode; `len()` is the enumerable own keys and `bool()` is always true;
+iteration is over keys unless a `Symbol.iterator` method says otherwise, and a
+JavaScript-style iterator is adapted; `repr` is an object literal that never runs
+an accessor; and an interceptor is not asked about dunder attribute names, which
+Python's own machinery looks up constantly. `Array::New` is capped at 2^26
+elements, because a Python list is dense and a sparse JavaScript array is not.
+
+### 34. A function template is a Python type per realm, and calling it is `new` (`docs/python.md`)
+
+What a `FunctionTemplate` or a `Class<T>` materialises into is a heap type
+derived from `unibind.Object`, one per realm, whose metaclass
+`unibind.TemplateType` records the template. The prototype is its `prototype`
+attribute, statics are type attributes, and a `ReadOnly` or `DontDelete` static
+holds on the type. That is the only shape under which `isinstance`, subclassing
+and `super()` - which a Python programmer will reach for immediately - mean
+anything.
+
+It changes three things decisions 12, 13 and 17 assumed:
+
+- **Python has one spelling for call and construct**, so calling the type from
+  Python is `new`, and a construct-only `Class<T>` is callable from Python
+  because that call is the construction. The plain call of decision 12's grid
+  is reachable only from C++, through `Function::Call`, where it behaves as the
+  grid says.
+- **`Inherit` chains the types, not only the prototypes**, so that
+  `isinstance(child, Parent)` is right - and a static declared on the parent is
+  therefore visible on the child, where `unibind/template.h` says V8's is not.
+- **A Python subclass's own members come before the prototype chain**, as a
+  subclass's methods override its base's in Python, and a template's type
+  mirrors its prototype's native methods as class attributes, marked so that
+  ordinary lookup ignores them, so that `super()` finds them.
+
+The per-realm cache of types lives inside the realm's globals, not in the
+realm's C++ record: there, the cycle through a type, its prototype, a function
+stored on it and that function's `__globals__` is one the collector can see and
+break. Held from C++, the realm would have lived until its isolate did.
+
+### 35. Stopping CPython: a pending call that re-arms itself, and `sys.monitoring` (`docs/python.md`)
+
+CPython has no terminate and no interrupt, only the per-interpreter pending call
+that the eval breaker drains. `TerminateExecution` sets the library's flag
+(decision 15) and queues one that raises `unibind.Terminated` - a
+`BaseException`, so `except Exception` does not see it - and **re-queues itself
+while the flag is set**, so that a script which catches `BaseException` meets it
+again at the next back-edge or call. On top, `sys.monitoring` LINE and CALL events
+are switched on while a stop is in force, which closes the two gaps a pending call
+leaves: straight-line code between checks, and a call to a builtin, which is
+checked only after it returns. The result is decision 15's promise kept to the
+letter, including V8's: a stopped script's `finally` does not run. PEP 669 costs
+nothing until events are set, so neither does this.
+
+`RequestInterrupt` rides the same pending call, which is also why an interrupt
+waits out a stop and runs after the cancel.
+
+What it cannot reach is the same as everywhere - native code - with a
+Python-shaped addition: **a single long-running builtin is native code**, so
+`sum(range(10**9))` or `time.sleep(60)` runs to its end before the stop lands.
+
+**The stop is the interpreter's, so it reaches every thread of it** - a
+`threading.Thread` the script started is stopped with the script. And
+**`~Isolate` stops those threads itself** and waits up to two seconds for them,
+because `Py_EndInterpreter` under a live thread is a fatal error and CPython's
+own answer - join it - can wait for ever. A thread still inside a call that has
+not returned after that is not waited for: the isolate leaves its interpreter
+behind, the isolate's thread is free at once, and `~Platform` ends the
+interpreter later if the thread has finished by then - or, if it has not, skips
+`Py_FinalizeEx`, which would be fatal with a sub-interpreter left. The cost is
+chosen in the open: a script's threads die with its isolate, where plain CPython
+would run them to completion. An embedder deciding an isolate's work is over is
+the one that decides (`docs/python.md` section 6.4).
+
+### 36. A promise is an `asyncio.Future`, and only `PumpJobs` runs the loop (`docs/python.md`)
+
+Decision 23 needs one queue that only `PumpJobs` drains. CPython's queue of
+continuations is an asyncio event loop, so each isolate gets one - a
+`SelectorEventLoop`, set as its thread's current loop so that script finds it -
+and **it is never run forever**. `PumpJobs` iterates it with a zero timeout until
+nothing is ready, alternating with posted work exactly as on the other two, and
+a stop in a pump discards what is ready. `Promise::New` is `create_future()`, a
+task is a promise, a script with top-level `await` evaluates to one, and a
+rejection with a value that is not an exception is carried in
+`unibind.Thrown`.
+
+The alternative - promises of the backend's own, with `then` - was rejected: every
+Python library that does I/O speaks asyncio, and a promise type none of them can
+`await` would have been a JavaScript island in a Python process.
+
+### 37. A heap limit from allocator hooks, and the limit hook where the backend can keep it (`docs/python.md`)
+
+CPython has no per-interpreter heap limit and no statistics worth the name.
+`PyMem_SetAllocator` accepts hooks before the interpreter comes up, and a 16-byte
+header on every block of the MEM and OBJ domains, naming the allocating thread's
+isolate, is enough for both: a per-isolate byte count that follows each block to
+whichever thread frees it, and a ceiling. An allocation that would cross
+`heapLimitBytes` is refused - a `MemoryError` the script can catch - and
+`EngineFault::OutOfMemory` is reported once per crossing.
+
+That makes decision 28's `SetHeapLimitCallback` keepable here, so **it is
+defined**: asked once per crossing, before the refusal, its answer adopted if it
+raises the ceiling. Decision 19's rule is that an operation an engine cannot do
+does not link; this one the *backend* can do, and so it links - SpiderMonkey
+remains the only backend where it does not. What the hooks do not see is written
+down rather than hidden: the interpreter's own start-up, the RAW domain, and
+anything allocated on a thread that is not the isolate's.
+
 ## Smaller things worth knowing
 
 - **`Frame` is placement-constructed into the caller's `HandleScope`.** V8
@@ -1149,7 +1354,10 @@ needs it.
   SpiderMonkey's `totalBytes` is the chunks its collector has reserved for the
   heap, less the empty ones it keeps cached for reuse, so it is not a repeat of
   `usedBytes`; only `usedBytes` compares across engines, and
-  only as a trend.
+  only as a trend. The CPython backend fills `usedBytes`, `totalBytes` (the
+  same figure: CPython will not say what it has reserved), `limitBytes` and the
+  two malloced figures, which are exact there because every byte it counts came
+  through its own allocator hooks.
 - **`ReturnValue` and `Local`'s predicates are header-only.** V8's integer
   setters (`int16_t` to `uint64_t`, each the integer when it fits in an
   `int32_t` and a Number otherwise), `Set(const Global<T>&)`, `SetFalse`,
@@ -1165,6 +1373,10 @@ what changed rather than only that it did: the three that used to be listed here
 as unpinned - a constructable template also being callable (12), one isolate per
 thread (11), and a value crossing realms (4) - all have cases now, and the
 decisions added since arrived with theirs.
+
+Decisions 30-37 are held by `tests/python/` rather than by the shared suite, and
+`tests/python/README.md` lists what each area pins. The coercions of decision 32
+are the one part with no direct case yet.
 
 What is *not* asserted is a separate list and a deliberate one: engine wording,
 stack-trace layout, finalizer timing, identity seen from a foreign realm, and a

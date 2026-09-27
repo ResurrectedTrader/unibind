@@ -1,6 +1,21 @@
 # Examples
 
-One program, `embed/main.cpp`: a platform, an isolate, a realm, a native class
+Two programs:
+
+- **`embed/`**, below: the smallest useful embedding, built against an
+  *installed* prefix to prove the install is complete.
+- **[`python_repl/`](python_repl/README.md)**: an interactive Python prompt over
+  the CPython backend. Its host bindings cover most of the binding API: classes,
+  templates with inheritance, interceptors, accessors, typed arrays, structured
+  clone, timers and promises, and stopping a script from another thread. It has a
+  `--demo` script that exercises all of them. It is built inside the library's
+  tree when `UNIBIND_BACKEND=python`
+  (`cmake --build build/python-x64 --config Release --target unibind_python_repl`),
+  and its CTest cases carry the label `example`.
+
+## embed
+
+`embed/main.cpp`: a platform, an isolate, a realm, a native class
 bound into it, a script, a JavaScript function called from C++, an exception
 caught, and the pump that promise continuations wait for.
 
@@ -9,7 +24,7 @@ built against an *installed* unibind - the prefix a stranger would be handed - a
 not against this source tree, so a missing header, a missing library or a
 half-written property sheet fails here rather than in someone else's afternoon.
 
-## Install first
+### Install first
 
 ```powershell
 cmake --preset v8
@@ -27,7 +42,7 @@ The examples below are `Win32`, matching an x86 prefix. An x64 prefix wants
 `-p:Platform=x64` and `-A x64`; the prefix knows which it was installed for and
 both consumption paths refuse the other one rather than letting the link fail.
 
-## MSBuild, which is the path that matters
+### MSBuild, which is the path that matters
 
 ```powershell
 msbuild examples\embed\embed.vcxproj -p:Configuration=Release -p:Platform=Win32 `
@@ -43,7 +58,7 @@ Two things the project has to say for itself, both marked in the file:
 `PreferredToolArchitecture=x64` (a 32-bit `lld-link` cannot link an engine this
 size, and does not say so - see the README's gotchas) and the static CRT.
 
-## CMake, for a CMake consumer
+### CMake, for a CMake consumer
 
 ```powershell
 cmake -S examples/embed -B build/example-cmake -G "Visual Studio 17 2022" `
@@ -62,7 +77,7 @@ A consumer who ships one engine writes `find_package(unibind REQUIRED)` and
 `-DUNIBIND_BACKEND=spidermonkey` to choose which. The three-target shape is in
 the root README.
 
-## What it prints
+### What it prints
 
 ```
 backend: v8 15.6.8

@@ -1,7 +1,13 @@
 # Engine builds
 
-This is where an engine lands. Both are prebuilt static libraries, static CRT
-(`/MT`), and neither is in git — see `.gitignore`.
+This is where a JavaScript engine lands. Both are prebuilt static libraries,
+static CRT (`/MT`), and neither is in git — see `.gitignore`.
+
+**CPython does not land here.** The third engine is built by vcpkg, not fetched:
+the `python` feature of `vcpkg.json`, through the overlay port in
+`cmake/vcpkg-ports/python3`, into the build tree's
+`vcpkg_installed/<triplet>/`. See [CPython](#cpython-31213--from-vcpkg-not-from-here)
+at the end of this file.
 
 **You do not have to put one here.** Configuring fetches the engine the build is
 pinned to, when there is not already one in the directory its version and
@@ -148,3 +154,35 @@ Upstream: `ResurrectedTrader/v8-static-win`, release `v8-15.6.8`, asset
 `v8-15.6.8-<arch>-<flavour>-msvc14.44.zip`. All four are published together, and
 the version directory holds one subdirectory per architecture and flavour
 (`x86-release/`, `x64-release/`, `x86-debug/`, …), so several sit side by side.
+
+## CPython 3.14.7 — from vcpkg, not from here
+
+Nothing is fetched into this directory for the python backend. There is no
+published static CPython to fetch: vcpkg's `python3` port builds one, and on the
+`*-windows-static` triplets it is exactly the shape of the two engines above -
+a static library against the static CRT. The root `CMakeLists.txt` asks for it
+only when `UNIBIND_BACKEND=python`, because building it costs minutes a V8 or
+SpiderMonkey tree has no use for.
+
+| | |
+|---|---|
+| where | `<build>/vcpkg_installed/<triplet>/` - `include/python3.14/`, `lib/python314.lib`, `debug/lib/python314_d.lib`, `tools/python3/Lib/` |
+| link | `python314.lib` (88 MB, x64 Release), which holds CPython and the standard library's extension modules, **plus** zlib, OpenSSL, libffi, SQLite, expat, liblzma, bzip2, libmpdec and zstd as vcpkg's own static libraries beside it |
+| include | `include/python3.14/` |
+| required defines | `Py_NO_LINK_LIB`, so `pyconfig.h` does not name an import library that does not exist (the backend sets it; a consumer includes no CPython header) |
+| built with | vcpkg's MSBuild build of CPython's `PCbuild`, on the machine that configured, `/MT` |
+| extra system libs | `version ws2_32 shlwapi pathcch bcrypt advapi32 user32 kernel32 ole32 oleaut32 iphlpapi rpcrt4 crypt32 winmm wbemuuid propsys` |
+| at build time | `tools/python3/python.exe`, the same CPython for the same architecture, which compiles `tools/python3/Lib` into the backend (`UNIBIND_PYTHON_EMBED_STDLIB`) |
+| at run time | nothing: the pure-Python standard library is embedded in the backend. With `UNIBIND_PYTHON_EMBED_STDLIB` off, `tools/python3/Lib` - see `docs/python.md` section 10.3 |
+| when | the first configure of a triplet: CPython and its eight third-party libraries from source, about twenty minutes on a 32-thread machine; then vcpkg's binary cache |
+
+The overlay port in `cmake/vcpkg-ports/python3` is what makes that library
+usable here: the registry's port gives up on extension modules for a static
+build, and builds its Release objects with `/GL`, which `lld-link` cannot read.
+It is vcpkg master's 3.14.7 port - the manifest baseline still has 3.12 - and
+`cmake/vcpkg-ports/mpdecimal` supplies the libmpdec it needs.
+`cmake/vcpkg-ports/README.md` has each change and why.
+
+`UNIBIND_PYTHON_DIR` points at a static CPython you already have, laid out as
+vcpkg lays it out, and vcpkg is then not asked for one. `UNIBIND_ENGINE_FLAVOR`
+does not apply: a Debug build links vcpkg's debug library from the same prefix.

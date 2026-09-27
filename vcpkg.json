@@ -1,9 +1,20 @@
 {
   "name": "unibind",
   "version-string": "0.1.0",
-  "description": "One embedding API over several JavaScript engines",
+  "description": "One embedding API over several engines",
   "builtin-baseline": "9e44ec0e9f247d77c230ced0ee66c76296837807",
   "dependencies": [
     "doctest"
-  ]
+  ],
+  "features": {
+    "python": {
+      "description": "The CPython backend: a static /MT CPython, built by vcpkg for the *-windows-static triplets",
+      "dependencies": [
+        {
+          "name": "python3",
+          "default-features": false
+        }
+      ]
+    }
+  }
 }

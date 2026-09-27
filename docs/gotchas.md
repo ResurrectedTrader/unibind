@@ -16,9 +16,9 @@ way in.
 
 ## The ones you will not diagnose from the symptom
 
-Twelve of these give a wrong answer and no error at all. The thirteenth gives an
-error that blames something else entirely, which is the same problem wearing a
-disguise.
+Eighteen of these give a wrong answer and no error at all. The nineteenth gives
+an error that blames something else entirely, which is the same problem wearing
+a disguise.
 
 | | |
 |---|---|
@@ -35,6 +35,12 @@ disguise.
 | A copy that copies nothing | [`CopyElements<T>` refuses a type mismatch by writing zero](#copyelementst-with-the-wrong-t-copies-nothing-and-says-0) |
 | A stale handle that reads a plausible value | [`UNIBIND_HANDLE_CHECKS` is an ABI flag, not a debug flag](#unibind_handle_checks-is-an-abi-flag-and-it-changes-behaviour) |
 | Every operation on an isolate doing nothing, over and over | [A stopped isolate stays stopped](#a-stopped-isolate-stays-stopped-and-does-nothing-quietly) |
+| An empty list that a callback treats as false (CPython) | [`ToBoolean`, `ToString` and `LooseEquals` are Python's](#toboolean-tostring-and-looseequals-are-pythons) |
+| A native's `SetNull()` that a script's `is None` misses (CPython) | [`None` is `undefined`, and `null` is something else](#none-is-undefined-and-null-is-something-else) |
+| One realm's monkey-patch showing up in another (CPython) | [Realms of one isolate share their modules](#realms-of-one-isolate-share-their-modules) |
+| A script's background thread that gets nothing done (CPython) | [A thread the script started dies with its isolate, and runs only while script does](#a-thread-the-script-started-dies-with-its-isolate-and-runs-only-while-script-does) |
+| Standard-library modules from another version, on one machine only (CPython) | [A standard library directory on the machine replaces the embedded one](#a-standard-library-directory-on-the-machine-replaces-the-embedded-one) |
+| A test case that passes without running | [A test case's name may not contain `;`](#a-test-cases-name-may-not-contain-) |
 
 ---
 
@@ -930,7 +936,232 @@ API exists to prevent.
 
 ---
 
+## Running Python (the CPython backend)
+
+Everything above applies to this backend too, except where it names the other
+two engines. These are its own, and most are the two languages disagreeing
+somewhere a JavaScript embedder would not think to look. `docs/python.md` has
+the reasoning behind each; this is the list of what bites.
+
+### Your scripts do not carry over, and nothing tells you until they run
+
+**Loud, eventually.** The C++ compiles once and links against any backend; the
+source text you hand `Evaluate` is the engine's language. A JavaScript script
+on the CPython backend is a `SyntaxError` - or, for a one-liner like `"1 + 1"`,
+quietly the same answer, which is how a test suite of small expressions can pass
+on both and prove nothing. Choosing this backend is choosing Python.
+
+### `None` is `undefined`, and `null` is something else
+
+**Silent.** `undefined` is `None`, because that is what a Python function with
+no `return` answers and what a missing value is in every Python API. `null` is
+`unibind.null`, a singleton of its own. So `ReturnValue::SetNull()` hands script
+an object that is falsy but **is not `None`** - `x is None` is false for it - and
+a Python function returning `None` reaches C++ as `undefined`, where
+`IsNull()` is false and `IsNullOrUndefined()` is true. Code that means "nothing"
+from C++ should say `SetUndefined()`; `null` is for when the distinction is the
+point. `json.dumps` does not know `unibind.null`.
+
+### A whole-number `double` arrives in Python as an `int`
+
+**Silent, and deliberate.** `Number::New(isolate, 3.0)` and
+`GetReturnValue().Set(3.0)` reach Python as the `int` 3, so a script can index,
+slice and `range()` with what a native returned. An integral value within ±2^53
+is an `int`; everything else - and `-0` - is a `float`. A script that tests
+`type(x) is float` on a native's answer is asking the wrong question. The other
+way round, a Python `2.0` stays a `float`, and `ToString` of it is `"2.0"`, not
+JavaScript's `"2"`.
+
+### `ToBoolean`, `ToString` and `LooseEquals` are Python's
+
+**Silent: a plausible wrong answer.** On this backend `ToBoolean` is `bool(x)`:
+**an empty list, an empty dict, `""` and `0.0` are false**, where JavaScript
+calls every object true. `ToString` is `str(x)`: `undefined` is `"None"`, `true`
+is `"True"`, a list is `"[1, 2]"`. `LooseEquals` is Python's `==`, so `1 == "1"`
+is false, with one JavaScript rule kept: `null == undefined`. A callback that
+coerces its arguments to decide something is deciding it by Python's rules. The
+one exception runs the other way: `bool()` of a `unibind.Object` is always true,
+as every object is in JavaScript.
+
+### A missing property is an error in Python and `undefined` in C++
+
+**Loud, and only on one side.** `o.nope` raises `AttributeError` and `o["nope"]`
+raises `KeyError`, as a Python programmer expects; `Get(context, "nope")` from
+C++ answers `undefined`, as V8's does. Likewise a write to a read-only property
+is a `TypeError` from Python and a silent no-op that answers true from C++ - V8's
+sloppy `Set` - and `del` of a missing name raises from Python while `Delete`
+answers true. A binding tested only from C++ has not seen what its script sees.
+
+### Realms of one isolate share their modules
+
+**Silent.** A realm here is a globals dictionary in one interpreter, so `sys`,
+`sys.modules`, `builtins` and every imported module are shared by every realm of
+an isolate. A script that patches `json.dumps` or sets `builtins.x` has done it
+for its neighbours. Two sandboxes that must not see each other's module state are
+two isolates, on two threads.
+
+### A standard library directory on the machine replaces the embedded one
+
+**Silent until it is the wrong one.** The pure-Python standard library is
+compiled into the backend (`UNIBIND_PYTHON_EMBED_STDLIB`, on by default), and a
+program needs nothing beside it. But a directory still wins when there is one:
+`UNIBIND_PYTHON_HOME`, then a `python-stdlib` directory beside the executable -
+any directory holding an `os.py`. That is there so a developer can run against
+sources, and it is taken on a user's machine just the same: an
+`UNIBIND_PYTHON_HOME` left pointing at another CPython's `Lib` gives the program
+modules written for another version, with errors far from their cause. A module's
+`__spec__.origin` says which one it got: `"frozen"` for the embedded one, a path
+for a directory ([`docs/python.md`](python.md) section 10.3).
+
+Two smaller things follow from the modules being frozen. A traceback into the
+standard library shows `File "<frozen json.decoder>", line 354` without the
+line's text, and `inspect.getsource` of a standard-library function raises
+`OSError`; point `UNIBIND_PYTHON_HOME` at `Lib` while debugging to get both back.
+
+### Built without the embedded standard library, the program runs only where it was built
+
+**Loud, but a long way from its cause.** With `UNIBIND_PYTHON_EMBED_STDLIB`
+off, the standard library is read from disk when the `Platform` is made, from
+`UNIBIND_PYTHON_HOME`, then a `python-stdlib` directory beside the executable,
+then the path the build found it at - which is inside the build tree. The last
+one is why everything works until the program is copied somewhere else, where
+`Platform` reports `EngineFault::Fatal` ("the Python standard library could not be
+found"), `IsInitialized()` is false and every `Isolate::New` is null. Ship
+`tools/python3/Lib` beside the program as `python-stdlib` - or leave the option
+on.
+
+### Three standard-library modules are refused in an isolate
+
+**Loud.** An isolate is a sub-interpreter with a GIL of its own, and a module
+that keeps state in C globals refuses to load in one, with `ImportError: module
+X does not support loading in subinterpreters`. With CPython 3.14 that is only
+`_wmi` (which `platform` does without), `_tracemalloc` - so there is no
+`tracemalloc` - and `_suggestions` (which `traceback` does without). `ctypes`,
+XML parsing, and the C `decimal` and `datetime`, which 3.12 refused, all work.
+The list is in `cmake/vcpkg-ports/README.md`.
+
+### A package with a C extension cannot be loaded, and there is no `site-packages`
+
+**Loud.** The engine is a static library, and a `.pyd` links `python3X.dll`,
+which does not exist in the process. Pure-Python packages work from wherever the
+embedder puts them on `sys.path` - which is empty to begin with when the standard
+library is embedded, and that one directory when it is read from disk: no
+`site-packages`, no `PYTHONPATH`, no current directory.
+
+### A long-running builtin cannot be stopped
+
+**Silent: the watchdog appears to do nothing.** A stop lands between two
+bytecodes, and a builtin is one bytecode. `sum(range(10**9))` ran for twenty
+seconds under a one-second watchdog, and `time.sleep(6)` for six; the statement
+after each did not run. The same goes for a blocking `socket.recv`, a lock, a
+subprocess wait. It is decision 15's rule about blocking natives, reached from
+the Python side.
+
+### A thread the script started dies with its isolate, and runs only while script does
+
+**Silent: work that simply stops happening.** `threading` works in an isolate,
+within limits that are easy to miss:
+
+- **It runs only while the isolate's thread lets it.** The two share a GIL, so a
+  script's thread runs while the isolate's thread is running Python or blocked
+  in a call - and not at all between scripts, however long the embedder waits
+  before the next `Evaluate` or `PumpJobs`. "Background" work happens only in the
+  foreground.
+- **It cannot touch anything of `unibind`'s.** A bound function, a class, a
+  `unibind.Object` attribute: each raises `RuntimeError: unibind: no isolate on
+  this thread` there. Hand results back through plain Python objects.
+- **A stop reaches it.** `TerminateExecution` stops every thread of the isolate's
+  interpreter, uncatchably, with no `finally` run.
+- **`~Isolate` ends it.** Teardown stops a script's threads and waits up to two
+  seconds for them. Plain CPython would run them to completion; here they are cut
+  off, so work a script wants finished it must `join()` before the script ends.
+- **One stuck in a call that never returns is left behind, not waited for.** The
+  isolate abandons its interpreter with the thread in it rather than hang or
+  crash, and if that thread has still not finished by `~Platform`, CPython is
+  never finalized - the process ends with it initialized.
+
+### A stop leaves Python's own cleanup undone
+
+**Silent.** No Python runs while a stop is in force, anywhere in the interpreter,
+and that includes code nobody thinks of as the script's. A weakref callback does
+not run, so a `WeakSet` whose members went during a stop goes on counting them.
+An `except` or `finally` that would have released a lock does not run, so a lock
+a script's code held can stay held. After a cancel, do not trust state that a
+stopped script was in the middle of changing.
+
+### No daemon threads, so some of the standard library fails
+
+**Loud.** Daemon threads are refused in an isolate, because one would outlive the
+interpreter it runs in. `subprocess.run(..., capture_output=True)` is the one
+people meet: on Windows it reads the pipes on daemon threads, and raises
+`RuntimeError: daemon threads are disabled in this interpreter` after the child
+has started. Without capturing it works, and so does `os.system`.
+
+### `asyncio.run` runs on a loop of its own, not the isolate's
+
+**Loud, in one case.** `asyncio.run()` works, on a fresh loop it makes and closes
+- which is fine, and afterwards `asyncio.get_event_loop()`, `asyncio.Future()` and
+`asyncio.ensure_future()` find the isolate's loop again. What does not work is
+`asyncio.run()` inside a script that uses top-level `await`: the whole script is
+then a task on the isolate's loop, and it is `RuntimeError: asyncio.run() cannot
+be called from a running event loop`, as in plain Python. Top-level `await` is the
+better tool in an embedding anyway: it runs on the isolate's loop, which
+`PumpJobs` drives, so its promises are ones C++ can see.
+
+### The isolate's loop cannot run subprocesses
+
+**Loud.** It is a `SelectorEventLoop`, which on Windows has no subprocess or pipe
+support: `await asyncio.create_subprocess_exec(...)` at the top level is
+`NotImplementedError`. Inside `asyncio.run()`, which makes a Proactor loop of its
+own, it works.
+
+### `Symbol.asyncIterator` and `Symbol.hasInstance` do nothing from Python
+
+**Silent until used.** Well-known symbols that stand for a Python protocol are
+stored under the protocol's name, and `Symbol.iterator` is honoured: `iter()` of a
+`unibind.Object` calls it. But Python looks `__aiter__` and `__instancecheck__` up
+on the *type*, never on an instance or its prototype, so an `asyncIterator`
+method does not make `async for` work (`TypeError`) and a `hasInstance` method is
+ignored by `isinstance`.
+
+### A debug CPython runs out of stack after about fifteen levels
+
+**Loud.** A debug build's evaluation loop is unoptimised, and every level of
+recursion through C - an import inside an import, a native calling back into
+Python - costs it about 50 KB of stack, twenty times what a release build
+spends. On a thread with Windows' default 1 MB that is some fifteen levels
+before `RecursionError`, which a release build does not reach for hundreds. Run
+debug builds on threads with a few megabytes of stack.
+
+### The heap limit counts what the script allocates on its own thread
+
+**Silent.** `heapLimitBytes` is kept by allocator hooks that charge each block to
+the allocating thread's isolate. What the interpreter allocates while it comes up
+is not counted, nor its raw allocations, nor anything a `threading.Thread` the
+script started allocates - that is charged to no isolate at all. A script that
+wants to get round the limit can.
+
+### Python is not a sandbox
+
+**Silent in the worst way.** A JavaScript engine can reach nothing the embedder
+did not bind. CPython can reach the file system, the network, other processes
+and the environment the moment a script says `import os`, and removing things from
+`builtins` does not take any of it away. Run only Python you would run as the
+host process, or contain the process with the operating system.
+
+---
+
 ## Working on the library itself
+
+### A test case's name may not contain `;`
+
+**Silent: the case passes without running.** `doctest_discover_tests` registers
+each case with CTest by name, and CMake splits a name at `;` as it splits any
+list. The case becomes two CTest tests, each asking the runner for a name that
+matches nothing, and a filter that matches nothing passes. The whole-suite-in-one-
+process test still runs it, which is the only reason anyone would notice - and how
+two cases in the python suite were found not to have been running under `ctest`.
+The parity reporter's `|` is the other character a name may not hold.
 
 ### Add a row to `tests/cmake/Capabilities.cmake` when you add an operation
 
