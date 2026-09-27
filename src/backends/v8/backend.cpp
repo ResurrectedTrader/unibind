@@ -1227,7 +1227,13 @@ std::optional<double> ToNumber(const Context& context, Slot value) {
     if (Stopped(OwnerOf(context))) {
         return std::nullopt;
     }
-    v8::Maybe<double> number = Resolve(value)->NumberValue(Raw(context));
+    v8::Local<v8::Value> raw = Resolve(value);
+    // Already a number: nothing to convert, and no script can run - so no
+    // handle to the realm either, which is what the conversion would cost.
+    if (raw->IsNumber()) {
+        return raw.As<v8::Number>()->Value();
+    }
+    v8::Maybe<double> number = raw->NumberValue(Raw(context));
     if (number.IsNothing()) {
         return std::nullopt;
     }
@@ -1238,7 +1244,11 @@ std::optional<int32_t> ToInt32(const Context& context, Slot value) {
     if (Stopped(OwnerOf(context))) {
         return std::nullopt;
     }
-    v8::Maybe<int32_t> number = Resolve(value)->Int32Value(Raw(context));
+    v8::Local<v8::Value> raw = Resolve(value);
+    if (raw->IsInt32()) {
+        return raw.As<v8::Int32>()->Value();
+    }
+    v8::Maybe<int32_t> number = raw->Int32Value(Raw(context));
     if (number.IsNothing()) {
         return std::nullopt;
     }
@@ -1249,7 +1259,11 @@ std::optional<uint32_t> ToUint32(const Context& context, Slot value) {
     if (Stopped(OwnerOf(context))) {
         return std::nullopt;
     }
-    v8::Maybe<uint32_t> number = Resolve(value)->Uint32Value(Raw(context));
+    v8::Local<v8::Value> raw = Resolve(value);
+    if (raw->IsUint32()) {
+        return raw.As<v8::Uint32>()->Value();
+    }
+    v8::Maybe<uint32_t> number = raw->Uint32Value(Raw(context));
     if (number.IsNothing()) {
         return std::nullopt;
     }
