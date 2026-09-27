@@ -1960,20 +1960,38 @@ std::optional<Slot> DeserializeValue(const Context& context, std::span<const uin
 namespace {
 
 /// Slots are (frame, index) pairs, so an argument list has to be resolved into
-/// real V8 handles before the call. Small lists stay on the stack.
+/// real V8 handles before the call. Small lists stay on the stack - which the
+/// comment always said and the code did not: every call with an argument paid
+/// for a vector on the heap.
 class ArgumentBuffer {
    public:
-    explicit ArgumentBuffer(std::span<const Slot> slots) : values_(slots.size()) {
-        for (size_t i = 0; i < slots.size(); ++i) {
-            values_[i] = Resolve(slots[i]);
+    explicit ArgumentBuffer(std::span<const Slot> slots) : size_(static_cast<int>(slots.size())) {
+        v8::Local<v8::Value>* out = inline_.data();
+        if (slots.size() > inline_.size()) {
+            spilled_.resize(slots.size());
+            out = spilled_.data();
         }
+        for (size_t i = 0; i < slots.size(); ++i) {
+            out[i] = Resolve(slots[i]);
+        }
+        data_ = out;
     }
 
-    [[nodiscard]] v8::Local<v8::Value>* data() noexcept { return values_.data(); }
-    [[nodiscard]] int size() const noexcept { return static_cast<int>(values_.size()); }
+    ArgumentBuffer(const ArgumentBuffer&) = delete;
+    ArgumentBuffer& operator=(const ArgumentBuffer&) = delete;
+    ArgumentBuffer(ArgumentBuffer&&) = delete;
+    ArgumentBuffer& operator=(ArgumentBuffer&&) = delete;
+    ~ArgumentBuffer() = default;
+
+    [[nodiscard]] v8::Local<v8::Value>* data() const noexcept { return data_; }
+    [[nodiscard]] int size() const noexcept { return size_; }
 
    private:
-    std::vector<v8::Local<v8::Value>> values_;
+    static constexpr size_t INLINE_ARGUMENTS = 8;
+    std::array<v8::Local<v8::Value>, INLINE_ARGUMENTS> inline_;
+    std::vector<v8::Local<v8::Value>> spilled_;
+    v8::Local<v8::Value>* data_ = nullptr;
+    int size_;
 };
 
 }  // namespace
