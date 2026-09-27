@@ -18,7 +18,13 @@
 /// form `tests/bench/Compare.cmake` merges; see README "What it costs".
 ///
 /// Numbers are only comparable against each other on the same machine.
-/// Written against `ub::` alone, like the rest of the suite.
+/// Written against `ub::` alone, like the rest of the suite - except, on the V8
+/// backend, a **raw V8 twin** of every row that has one: the same operation
+/// written against V8 directly, on the same isolate and realm, measured right
+/// after the `ub::` row it pairs with. The difference is what unibind costs
+/// over the engine itself. It is built into the V8 backend's benchmark only
+/// (`UNIBIND_BENCH_V8_BASELINE`, set by tests/CMakeLists.txt), and it goes in
+/// the CSV's `raw_ns` column.
 
 #include <algorithm>
 #include <array>
@@ -37,6 +43,13 @@
 #include <vector>
 
 #include "unibind/unibind.h"
+
+#ifdef UNIBIND_BENCH_V8_BASELINE
+#include <v8-fast-api-calls.h>
+#include <v8.h>
+
+#include "unibind/interop/v8.h"
+#endif
 
 namespace {
 
@@ -62,6 +75,11 @@ struct Result {
     std::uint64_t iterations = 0;
     /// The slowest repetition over the fastest - how far to trust the median.
     double spread = 0.0;
+    /// The raw V8 twin's median, on the V8 backend, for a row that has one.
+    std::optional<double> raw;
+    /// A row with no `ub::` side: measured against V8 alone, for comparison
+    /// with a neighbouring row. `nanoseconds` and `raw` are then the same.
+    bool rawOnly = false;
 };
 
 /// Runs `n` operations and says whether they all did what they should.
@@ -186,6 +204,79 @@ ub::Intercepted AnswerOne(const ub::Local<ub::Name>& property, const ub::Propert
     return ub::Intercepted::Yes;
 }
 
+#ifdef UNIBIND_BENCH_V8_BASELINE
+// ---------------------------------------------------------------------------
+// The same, written against V8 directly
+//
+// Each is what a V8 embedder would write for the `ub::` callback above it, and
+// does the same work: a method and an accessor find their native through an
+// internal field of a receiver a `v8::Signature` has already checked, which is
+// V8's own way to type a receiver and what `Class<T>` does by other means.
+// ---------------------------------------------------------------------------
+
+constexpr int kRawNativeField = 0;
+
+Counter* RawCounterOf(v8::Local<v8::Object> self) {
+    return static_cast<Counter*>(
+        self->GetAlignedPointerFromInternalField(kRawNativeField, v8::kEmbedderDataTypeTagDefault));
+}
+
+void RawAdd(const v8::FunctionCallbackInfo<v8::Value>& info) {
+    const v8::Local<v8::Context> context = info.GetIsolate()->GetCurrentContext();
+    const v8::Maybe<std::int32_t> a = info[0]->Int32Value(context);
+    const v8::Maybe<std::int32_t> b = info[1]->Int32Value(context);
+    if (a.IsJust() && b.IsJust()) {
+        info.GetReturnValue().Set(a.FromJust() + b.FromJust());
+    }
+}
+
+void RawCallee(const v8::FunctionCallbackInfo<v8::Value>& info) {
+    info.GetReturnValue().Set(info.Length());
+}
+
+void RawIncrement(const v8::FunctionCallbackInfo<v8::Value>& info) {
+    Counter* self = RawCounterOf(info.This());
+    ++self->value;
+    info.GetReturnValue().Set(self->value);
+}
+
+void RawReadValue(const v8::FunctionCallbackInfo<v8::Value>& info) {
+    info.GetReturnValue().Set(RawCounterOf(info.This())->value);
+}
+
+void RawWriteValue(const v8::FunctionCallbackInfo<v8::Value>& info) {
+    const v8::Maybe<std::int32_t> value = info[0]->Int32Value(info.GetIsolate()->GetCurrentContext());
+    if (value.IsJust()) {
+        RawCounterOf(info.This())->value = value.FromJust();
+    }
+}
+
+void RawDataRead(v8::Local<v8::Name> /*property*/, const v8::PropertyCallbackInfo<v8::Value>& info) {
+    info.GetReturnValue().Set(RawCounterOf(info.Holder())->value);
+}
+
+void RawDataWrite(v8::Local<v8::Name> /*property*/, v8::Local<v8::Value> value,
+                  const v8::PropertyCallbackInfo<v8::Boolean>& info) {
+    const v8::Maybe<std::int32_t> asInt = value->Int32Value(info.GetIsolate()->GetCurrentContext());
+    if (asInt.IsJust()) {
+        RawCounterOf(info.Holder())->value = asInt.FromJust();
+    }
+}
+
+v8::Intercepted RawAnswerOne(v8::Local<v8::Name> property, const v8::PropertyCallbackInfo<v8::Value>& info) {
+    if (!property->IsString()) {
+        return v8::Intercepted::kNo;
+    }
+    info.GetReturnValue().Set(1);
+    return v8::Intercepted::kYes;
+}
+
+/// The natives the raw instances carry. The benchmark's lifetime, so nothing
+/// finalizes them.
+Counter g_rawCounter;
+Counter g_rawDataCounter;
+#endif
+
 // ---------------------------------------------------------------------------
 // Script-side workloads
 // ---------------------------------------------------------------------------
@@ -220,6 +311,11 @@ struct ScriptWorkload {
     /// What the loop returns, per iteration; checked on every run.
     double perIterationJs = 1.0;
     double perIterationPy = 1.0;
+    /// On V8, the JavaScript `pre` of the row's raw twin: the same loop over
+    /// what `RunScriptSide` made with V8's own API. Empty for a row with no
+    /// twin - one that never leaves script, and the construct row, whose cost
+    /// is mostly the collector's.
+    std::string_view rawJsPre;
 };
 
 // NOLINTBEGIN(cert-err58-cpp)
@@ -277,19 +373,23 @@ constexpr std::array kScriptWorkloads{
     ScriptWorkload{.id = "native-accessor",
                    .label = "read a native accessor (Class<T>)",
                    .js = {.pre = "const c = counter; c.value = 1;", .body = "s += c.value;"},
-                   .py = {.pre = "c = counter; c.value = 1", .body = "s += c.value"}},
+                   .py = {.pre = "c = counter; c.value = 1", .body = "s += c.value"},
+                   .rawJsPre = "const c = rawCounter; c.value = 1;"},
     ScriptWorkload{.id = "native-method",
                    .label = "call a native method (Class<T>)",
                    .js = {.pre = "const c = counter; c.value = 0;", .body = "s = c.increment();"},
-                   .py = {.pre = "c = counter; c.value = 0", .body = "s = c.increment()"}},
+                   .py = {.pre = "c = counter; c.value = 0", .body = "s = c.increment()"},
+                   .rawJsPre = "const c = rawCounter; c.value = 0;"},
     ScriptWorkload{.id = "native-function",
                    .label = "call a native function",
                    .js = {.pre = "const f = add;", .body = "s = f(s, 1);"},
-                   .py = {.pre = "f = add", .body = "s = f(s, 1)"}},
+                   .py = {.pre = "f = add", .body = "s = f(s, 1)"},
+                   .rawJsPre = "const f = rawAdd;"},
     ScriptWorkload{.id = "interceptor-read",
                    .label = "read through a named interceptor",
                    .js = {.pre = "const h = intercepted;", .body = "s += h.one;"},
-                   .py = {.pre = "h = intercepted", .body = "s += h.one"}},
+                   .py = {.pre = "h = intercepted", .body = "s += h.one"},
+                   .rawJsPre = "const h = rawIntercepted;"},
     ScriptWorkload{.id = "native-construct",
                    .label = "construct a native class instance",
                    .js = {.pre = "const C = Counter;", .body = "new C(1); s += 1;"},
@@ -337,6 +437,11 @@ std::string FunctionName(std::string_view id) {
     return name;
 }
 
+std::string DefineJs(const std::string& name, const Source& s) {
+    return "function " + name + "(n) { " + std::string(s.pre) + " let s = 0; for (let i = 0; i < n; ++i) { " +
+           std::string(s.body) + " } return " + std::string(s.result) + "; }\n";
+}
+
 std::string Define(bool python, const ScriptWorkload& workload) {
     const std::string name = FunctionName(workload.id);
     if (python) {
@@ -349,9 +454,7 @@ std::string Define(bool python, const ScriptWorkload& workload) {
         return "def " + name + "(n):\n    " + std::string(s.pre) + "\n    s = 0\n    for i in range(n):\n        " +
                body + "\n    return " + std::string(s.result) + "\n";
     }
-    const Source& s = workload.js;
-    return "function " + name + "(n) { " + std::string(s.pre) + " let s = 0; for (let i = 0; i < n; ++i) { " +
-           std::string(s.body) + " } return " + std::string(s.result) + "; }\n";
+    return DefineJs(name, workload.js);
 }
 
 /// Exposed under a name each language would spell: `camelCase` to JavaScript,
@@ -365,6 +468,86 @@ void Report(const char* what, const ub::Context& context, ub::TryCatch& handler)
     std::fprintf(stderr, "bench: %s failed: %s\n", what,
                  handler.HasCaught() ? handler.Message(context).value_or("(no message)").c_str() : "(nothing thrown)");
 }
+
+#ifdef UNIBIND_BENCH_V8_BASELINE
+/// What the raw twins of the script-side rows call, made with V8's own API and
+/// put on the realm's global: `rawAdd`, `rawCounter` (a class instance whose
+/// `value` accessor and `increment` method live on its prototype, as
+/// `Class<T>`'s do), `rawDataCounter` (the same accessor as a native data
+/// property on the instance - V8's other shape, for comparison) and
+/// `rawIntercepted`.
+bool ExposeRawNatives(ub::Isolate& isolate, const ub::Context& context) {
+    v8::Isolate* raw = ub::interop::V8Isolate(isolate);
+    const v8::HandleScope scope(raw);
+    const v8::Local<v8::Context> realm = ub::interop::V8Context(context);
+
+    const v8::Local<v8::FunctionTemplate> counterClass = v8::FunctionTemplate::New(raw);
+    counterClass->InstanceTemplate()->SetInternalFieldCount(kRawNativeField + 1);
+    const v8::Local<v8::Signature> signature = v8::Signature::New(raw, counterClass);
+    const v8::Local<v8::ObjectTemplate> prototype = counterClass->PrototypeTemplate();
+    prototype->Set(raw, "increment",
+                   v8::FunctionTemplate::New(raw, &RawIncrement, {}, signature, 0, v8::ConstructorBehavior::kThrow));
+    prototype->SetAccessorProperty(
+        v8::String::NewFromUtf8Literal(raw, "value"),
+        v8::FunctionTemplate::New(raw, &RawReadValue, {}, signature, 0, v8::ConstructorBehavior::kThrow),
+        v8::FunctionTemplate::New(raw, &RawWriteValue, {}, signature, 1, v8::ConstructorBehavior::kThrow));
+
+    const v8::Local<v8::ObjectTemplate> dataShape = v8::ObjectTemplate::New(raw);
+    dataShape->SetInternalFieldCount(kRawNativeField + 1);
+    dataShape->SetNativeDataProperty(v8::String::NewFromUtf8Literal(raw, "value"), &RawDataRead, &RawDataWrite);
+
+    const v8::Local<v8::ObjectTemplate> interceptorShape = v8::ObjectTemplate::New(raw);
+    interceptorShape->SetHandler(v8::NamedPropertyHandlerConfiguration(&RawAnswerOne));
+
+    v8::Local<v8::Function> add;
+    v8::Local<v8::Function> constructor;
+    v8::Local<v8::Object> counter;
+    v8::Local<v8::Object> dataCounter;
+    v8::Local<v8::Object> intercepted;
+    if (!v8::Function::New(realm, &RawAdd, {}, 0, v8::ConstructorBehavior::kThrow).ToLocal(&add) ||
+        !counterClass->GetFunction(realm).ToLocal(&constructor) || !constructor->NewInstance(realm).ToLocal(&counter) ||
+        !dataShape->NewInstance(realm).ToLocal(&dataCounter) ||
+        !interceptorShape->NewInstance(realm).ToLocal(&intercepted)) {
+        return false;
+    }
+    counter->SetAlignedPointerInInternalField(kRawNativeField, &g_rawCounter, v8::kEmbedderDataTypeTagDefault);
+    dataCounter->SetAlignedPointerInInternalField(kRawNativeField, &g_rawDataCounter, v8::kEmbedderDataTypeTagDefault);
+
+    const v8::Local<v8::Object> global = realm->Global();
+    const auto expose = [&](const char* name, v8::Local<v8::Value> value) {
+        v8::Local<v8::String> key;
+        return v8::String::NewFromUtf8(raw, name).ToLocal(&key) && global->Set(realm, key, value).FromMaybe(false);
+    };
+    return expose("rawAdd", add) && expose("rawCounter", counter) && expose("rawDataCounter", dataCounter) &&
+           expose("rawIntercepted", intercepted);
+}
+
+/// One run of a raw twin's loop, `NAME(n)`, compiled and run through V8's own
+/// API, and whether it returned what it should.
+bool RunRawLoop(ub::Isolate& isolate, const ub::Context& context, const std::string& name, std::uint64_t n,
+                double expected) {
+    v8::Isolate* raw = ub::interop::V8Isolate(isolate);
+    const v8::HandleScope scope(raw);
+    const v8::Local<v8::Context> realm = ub::interop::V8Context(context);
+    const v8::TryCatch handler(raw);
+    const std::string call = name + "(" + std::to_string(n) + ")";
+    v8::Local<v8::String> source;
+    v8::Local<v8::Script> script;
+    v8::Local<v8::Value> value;
+    if (!v8::String::NewFromUtf8(raw, call.c_str(), v8::NewStringType::kNormal, static_cast<int>(call.size()))
+             .ToLocal(&source) ||
+        !v8::Script::Compile(realm, source).ToLocal(&script) || !script->Run(realm).ToLocal(&value)) {
+        std::fprintf(stderr, "bench: %s failed\n", call.c_str());
+        return false;
+    }
+    const double answer = value->NumberValue(realm).FromMaybe(-1.0);
+    if (answer != expected) {
+        std::fprintf(stderr, "bench: %s returned %.17g, not %.17g\n", call.c_str(), answer, expected);
+        return false;
+    }
+    return true;
+}
+#endif
 
 bool RunScriptSide(const Options& options, ub::Isolate& isolate, const ub::Context& context, bool python,
                    std::vector<Result>& results) {
@@ -402,7 +585,16 @@ bool RunScriptSide(const Options& options, ub::Isolate& isolate, const ub::Conte
         std::fprintf(stderr, "bench: could not expose what the script side calls\n");
         return false;
     }
+#ifdef UNIBIND_BENCH_V8_BASELINE
+    if (!ExposeRawNatives(isolate, context)) {
+        std::fprintf(stderr, "bench: could not make what the raw V8 twins call\n");
+        return false;
+    }
+#endif
 
+    // The loops run to at most 2^29: the counters stay small integers in both
+    // languages - a Smi in V8, one digit in CPython.
+    constexpr std::uint64_t kLoopCeiling = std::uint64_t{1} << 29U;
     for (const ScriptWorkload& workload : kScriptWorkloads) {
         if (!ub::Evaluate(context, Define(python, workload))) {
             Report(std::string(workload.id).c_str(), context, handler);
@@ -426,13 +618,51 @@ bool RunScriptSide(const Options& options, ub::Isolate& isolate, const ub::Conte
             }
             return true;
         };
-        // The loop counters stay small integers in both languages - a Smi in
-        // V8, one digit in CPython - with the ceiling at 2^29.
-        auto result = Measure(options, Side::Script, workload.id, workload.label, body, 1000, std::uint64_t{1} << 29U);
+        auto result = Measure(options, Side::Script, workload.id, workload.label, body, 1000, kLoopCeiling);
         if (!result) {
             return false;
         }
+#ifdef UNIBIND_BENCH_V8_BASELINE
+        // The raw twin: the same loop body over what `ExposeRawNatives` made,
+        // measured right after, so both see the machine in the same state.
+        const auto measureRaw = [&](const std::string& rawName, const Source& source,
+                                    std::string_view id) -> std::optional<Result> {
+            if (!ub::Evaluate(context, DefineJs(rawName, source))) {
+                Report(rawName.c_str(), context, handler);
+                return std::nullopt;
+            }
+            const Body rawBody = [&](std::uint64_t n) {
+                return RunRawLoop(isolate, context, rawName, n, perIteration * static_cast<double>(n));
+            };
+            return Measure(options, Side::Script, id, workload.label, rawBody, 1000, kLoopCeiling);
+        };
+        if (!workload.rawJsPre.empty()) {
+            const auto raw =
+                measureRaw("raw_" + name, Source{.pre = workload.rawJsPre, .body = workload.js.body}, workload.id);
+            if (!raw) {
+                return false;
+            }
+            result->raw = raw->nanoseconds;
+        }
         results.push_back(std::move(*result));
+        // V8's other shape of native accessor, a data property on the
+        // instance, which unibind does not use (see AccessorRecord in the V8
+        // backend): raw only, beside the accessor row it compares with.
+        if (workload.id == "native-accessor") {
+            auto data = measureRaw("raw_native_accessor_data",
+                                   Source{.pre = "const c = rawDataCounter; c.value = 1;", .body = workload.js.body},
+                                   "native-accessor-data");
+            if (!data) {
+                return false;
+            }
+            data->label = "read a native data property (raw V8 only)";
+            data->raw = data->nanoseconds;
+            data->rawOnly = true;
+            results.push_back(std::move(*data));
+        }
+#else
+        results.push_back(std::move(*result));
+#endif
     }
 
     const double baseline = results.front().nanoseconds;
@@ -465,9 +695,252 @@ bool RunIsolateLifecycle(const Options& options, std::vector<Result>& results) {
     if (!result) {
         return false;
     }
+#ifdef UNIBIND_BENCH_V8_BASELINE
+    // Each with an allocator of its own, as `Isolate::New` makes one.
+    const Body raw = [](std::uint64_t n) {
+        for (std::uint64_t i = 0; i < n; ++i) {
+            const std::unique_ptr<v8::ArrayBuffer::Allocator> allocator(
+                v8::ArrayBuffer::Allocator::NewDefaultAllocator());
+            v8::Isolate::CreateParams params;
+            params.array_buffer_allocator = allocator.get();
+            v8::Isolate* isolate = v8::Isolate::New(params);
+            if (isolate == nullptr) {
+                return false;
+            }
+            isolate->Dispose();
+        }
+        return true;
+    };
+    const auto rawResult = Measure(options, Side::Native, "isolate-new", "Isolate::New + destroy", raw, 1, 100000);
+    if (!rawResult) {
+        return false;
+    }
+    result->raw = rawResult->nanoseconds;
+#endif
     results.push_back(std::move(*result));
     return true;
 }
+
+struct NativeWorkload {
+    std::string_view id;
+    std::string_view label;
+    Body body;
+    std::uint64_t firstGuess = 1000;
+};
+
+#ifdef UNIBIND_BENCH_V8_BASELINE
+/// The raw twins' own objects, made with V8's API in the realm the `ub::` rows
+/// use: an `Object::New` object with `property` set, the script's own object
+/// and `inc`, a native function, and "1 + 1" compiled once. Roots, so that each
+/// twin can open a scope of its own and take locals from them once, outside
+/// its loop, as a V8 embedder would.
+struct RawNative {
+    v8::Global<v8::Object> object;
+    v8::Global<v8::String> key;
+    v8::Global<v8::String> xKey;
+    v8::Global<v8::Object> scriptObject;
+    v8::Global<v8::Function> function;
+    v8::Global<v8::Function> inc;
+    v8::Global<v8::Script> script;
+};
+
+bool SetUpRawNative(ub::Isolate& isolate, const ub::Context& context, RawNative& state) {
+    v8::Isolate* raw = ub::interop::V8Isolate(isolate);
+    const v8::HandleScope scope(raw);
+    const v8::Local<v8::Context> realm = ub::interop::V8Context(context);
+    const v8::Local<v8::Object> object = v8::Object::New(raw);
+    const v8::Local<v8::String> key = v8::String::NewFromUtf8Literal(raw, "property");
+    v8::Local<v8::Value> scriptObject;
+    v8::Local<v8::Value> inc;
+    v8::Local<v8::Function> function;
+    v8::Local<v8::Script> script;
+    if (!object->Set(realm, key, v8::Integer::New(raw, 1)).FromMaybe(false) ||
+        !realm->Global()->Get(realm, v8::String::NewFromUtf8Literal(raw, "scriptObject")).ToLocal(&scriptObject) ||
+        !realm->Global()->Get(realm, v8::String::NewFromUtf8Literal(raw, "inc")).ToLocal(&inc) ||
+        !scriptObject->IsObject() || !inc->IsFunction() ||
+        !v8::Function::New(realm, &RawCallee, {}, 0, v8::ConstructorBehavior::kThrow).ToLocal(&function) ||
+        !v8::Script::Compile(realm, v8::String::NewFromUtf8Literal(raw, "1 + 1")).ToLocal(&script)) {
+        return false;
+    }
+    state.object.Reset(raw, object);
+    state.key.Reset(raw, key);
+    state.xKey.Reset(raw, v8::String::NewFromUtf8Literal(raw, "x"));
+    state.scriptObject.Reset(raw, scriptObject.As<v8::Object>());
+    state.function.Reset(raw, function);
+    state.inc.Reset(raw, inc.As<v8::Function>());
+    state.script.Reset(raw, script);
+    return true;
+}
+
+/// The raw twin of each C++-side row that has one, under the row's id. Each
+/// does what the `ub::` row's body does, a scope per operation included.
+std::vector<NativeWorkload> RawNativeWorkloads(ub::Isolate& isolate, const ub::Context& context,
+                                               const RawNative& state) {
+    v8::Isolate* raw = ub::interop::V8Isolate(isolate);
+    std::vector<NativeWorkload> twins;
+    // Every one opens a scope for the locals it takes from the roots, once.
+    const auto twin = [&](std::string_view id, auto loop) {
+        twins.push_back(NativeWorkload{id, "", [raw, &context, loop](std::uint64_t n) {
+                                           const v8::HandleScope outer(raw);
+                                           return loop(ub::interop::V8Context(context), n);
+                                       }});
+    };
+    twin("object-new", [raw](v8::Local<v8::Context> /*realm*/, std::uint64_t n) {
+        for (std::uint64_t i = 0; i < n; ++i) {
+            const v8::HandleScope inner(raw);
+            g_sink += v8::Object::New(raw).IsEmpty() ? 0 : 1;
+        }
+        return true;
+    });
+    const auto readInt = [](v8::Local<v8::Value> value) {
+        return value->IsInt32() ? value.As<v8::Int32>()->Value() : 0;
+    };
+    twin("get-by-handle", [raw, &state, readInt](v8::Local<v8::Context> realm, std::uint64_t n) {
+        const v8::Local<v8::Object> object = state.object.Get(raw);
+        const v8::Local<v8::String> key = state.key.Get(raw);
+        for (std::uint64_t i = 0; i < n; ++i) {
+            const v8::HandleScope inner(raw);
+            v8::Local<v8::Value> value;
+            g_sink += object->Get(realm, key).ToLocal(&value) ? readInt(value) : 0;
+        }
+        return true;
+    });
+    twin("get-by-name", [raw, &state](v8::Local<v8::Context> realm, std::uint64_t n) {
+        const v8::Local<v8::Object> object = state.object.Get(raw);
+        for (std::uint64_t i = 0; i < n; ++i) {
+            const v8::HandleScope inner(raw);
+            v8::Local<v8::String> name;
+            v8::Local<v8::Value> value;
+            const bool ok = v8::String::NewFromUtf8(raw, "property", v8::NewStringType::kNormal, 8).ToLocal(&name) &&
+                            object->Get(realm, name).ToLocal(&value);
+            g_sink += ok ? 1 : 0;
+        }
+        return true;
+    });
+    twin("get-script-object", [raw, &state, readInt](v8::Local<v8::Context> realm, std::uint64_t n) {
+        const v8::Local<v8::Object> object = state.scriptObject.Get(raw);
+        const v8::Local<v8::String> key = state.xKey.Get(raw);
+        for (std::uint64_t i = 0; i < n; ++i) {
+            const v8::HandleScope inner(raw);
+            v8::Local<v8::Value> value;
+            g_sink += object->Get(realm, key).ToLocal(&value) ? readInt(value) : 0;
+        }
+        return true;
+    });
+    twin("set-by-handle", [raw, &state](v8::Local<v8::Context> realm, std::uint64_t n) {
+        const v8::Local<v8::Object> object = state.object.Get(raw);
+        const v8::Local<v8::String> key = state.key.Get(raw);
+        for (std::uint64_t i = 0; i < n; ++i) {
+            const v8::HandleScope inner(raw);
+            const bool set =
+                object->Set(realm, key, v8::Integer::New(raw, static_cast<std::int32_t>(i & 0xffU))).FromMaybe(false);
+            g_sink += set ? 1 : 0;
+        }
+        return true;
+    });
+    twin("call-native", [raw, &state](v8::Local<v8::Context> realm, std::uint64_t n) {
+        const v8::Local<v8::Function> function = state.function.Get(raw);
+        for (std::uint64_t i = 0; i < n; ++i) {
+            const v8::HandleScope inner(raw);
+            g_sink += function->Call(realm, realm->Global(), 0, nullptr).IsEmpty() ? 0 : 1;
+        }
+        return true;
+    });
+    twin("call-script", [raw, &state](v8::Local<v8::Context> realm, std::uint64_t n) {
+        const v8::Local<v8::Function> inc = state.inc.Get(raw);
+        const v8::Local<v8::Value> receiver = v8::Undefined(raw);
+        for (std::uint64_t i = 0; i < n; ++i) {
+            const v8::HandleScope inner(raw);
+            std::array<v8::Local<v8::Value>, 1> arguments{v8::Integer::New(raw, static_cast<std::int32_t>(i & 0xffU))};
+            v8::Local<v8::Value> result;
+            if (!inc->Call(realm, receiver, 1, arguments.data()).ToLocal(&result)) {
+                return false;
+            }
+            g_sink += result->IsInt32() ? 1 : 0;
+        }
+        return true;
+    });
+    twin("evaluate", [raw](v8::Local<v8::Context> realm, std::uint64_t n) {
+        for (std::uint64_t i = 0; i < n; ++i) {
+            const v8::HandleScope inner(raw);
+            v8::Local<v8::String> source;
+            v8::Local<v8::Script> script;
+            v8::Local<v8::Value> result;
+            if (!v8::String::NewFromUtf8(raw, "1 + 1", v8::NewStringType::kNormal, 5).ToLocal(&source) ||
+                !v8::Script::Compile(realm, source).ToLocal(&script) || !script->Run(realm).ToLocal(&result)) {
+                return false;
+            }
+            g_sink += 1;
+        }
+        return true;
+    });
+    twin("script-run", [raw, &state](v8::Local<v8::Context> realm, std::uint64_t n) {
+        const v8::Local<v8::Script> script = state.script.Get(raw);
+        for (std::uint64_t i = 0; i < n; ++i) {
+            const v8::HandleScope inner(raw);
+            v8::Local<v8::Value> result;
+            if (!script->Run(realm).ToLocal(&result)) {
+                return false;
+            }
+            g_sink += 1;
+        }
+        return true;
+    });
+    twin("context-new", [raw](v8::Local<v8::Context> /*realm*/, std::uint64_t n) {
+        for (std::uint64_t i = 0; i < n; ++i) {
+            const v8::HandleScope inner(raw);
+            if (v8::Context::New(raw).IsEmpty()) {
+                return false;
+            }
+        }
+        return true;
+    });
+    twin("frame", [raw](v8::Local<v8::Context> /*realm*/, std::uint64_t n) {
+        for (std::uint64_t i = 0; i < n; ++i) {
+            const v8::HandleScope inner(raw);
+            g_sink += 1;
+        }
+        return true;
+    });
+    twin("handle-create", [raw](v8::Local<v8::Context> /*realm*/, std::uint64_t n) {
+        std::uint64_t made = 0;
+        while (made < n) {
+            const v8::HandleScope inner(raw);
+            const std::uint64_t chunk = std::min<std::uint64_t>(1024, n - made);
+            for (std::uint64_t i = 0; i < chunk; ++i) {
+                g_sink += v8::Integer::New(raw, static_cast<std::int32_t>(i)).As<v8::Int32>()->Value();
+            }
+            made += chunk;
+        }
+        return true;
+    });
+    twin("handle-read", [raw](v8::Local<v8::Context> /*realm*/, std::uint64_t n) {
+        const v8::HandleScope inner(raw);
+        const v8::Local<v8::Int32> value = v8::Integer::New(raw, 3).As<v8::Int32>();
+        for (std::uint64_t i = 0; i < n; ++i) {
+            g_sink += value->Value();
+        }
+        return true;
+    });
+    twin("handle-escape", [raw](v8::Local<v8::Context> /*realm*/, std::uint64_t n) {
+        for (std::uint64_t i = 0; i < n; ++i) {
+            const v8::HandleScope outer(raw);
+            v8::EscapableHandleScope inner(raw);
+            g_sink += inner.Escape(v8::Integer::New(raw, 1)).As<v8::Int32>()->Value();
+        }
+        return true;
+    });
+    twin("global", [raw, &state](v8::Local<v8::Context> /*realm*/, std::uint64_t n) {
+        const v8::Local<v8::Object> object = state.object.Get(raw);
+        for (std::uint64_t i = 0; i < n; ++i) {
+            const v8::Global<v8::Object> root(raw, object);
+            g_sink += root.IsEmpty() ? 0 : 1;
+        }
+        return true;
+    });
+    return twins;
+}
+#endif
 
 bool RunNativeSide(const Options& options, ub::Isolate& isolate, const ub::Context& context, bool python,
                    std::vector<Result>& results) {
@@ -492,12 +965,6 @@ bool RunNativeSide(const Options& options, ub::Isolate& isolate, const ub::Conte
         return false;
     }
 
-    struct NativeWorkload {
-        std::string_view id;
-        std::string_view label;
-        Body body;
-        std::uint64_t firstGuess = 1000;
-    };
     std::vector<NativeWorkload> workloads;
     workloads.push_back(NativeWorkload{"object-new", "Object::New",
                                        [&](std::uint64_t n) {
@@ -671,6 +1138,15 @@ bool RunNativeSide(const Options& options, ub::Isolate& isolate, const ub::Conte
                                        },
                                        1000});
 
+#ifdef UNIBIND_BENCH_V8_BASELINE
+    RawNative rawState;
+    if (!SetUpRawNative(isolate, context, rawState)) {
+        std::fprintf(stderr, "bench: could not set the raw V8 twins up\n");
+        return false;
+    }
+    const std::vector<NativeWorkload> twins = RawNativeWorkloads(isolate, context, rawState);
+#endif
+
     constexpr std::uint64_t kMany = std::uint64_t{1} << 32U;
     for (const NativeWorkload& workload : workloads) {
         auto result =
@@ -679,6 +1155,19 @@ bool RunNativeSide(const Options& options, ub::Isolate& isolate, const ub::Conte
             std::fprintf(stderr, "bench: %s failed\n", std::string(workload.id).c_str());
             return false;
         }
+#ifdef UNIBIND_BENCH_V8_BASELINE
+        // Right after the row it pairs with, so both see the machine alike.
+        const auto twin = std::ranges::find(twins, workload.id, &NativeWorkload::id);
+        if (twin != twins.end()) {
+            const auto raw =
+                Measure(options, Side::Native, workload.id, workload.label, twin->body, workload.firstGuess, kMany);
+            if (!raw) {
+                std::fprintf(stderr, "bench: the raw V8 twin of %s failed\n", std::string(workload.id).c_str());
+                return false;
+            }
+            result->raw = raw->nanoseconds;
+        }
+#endif
         results.push_back(std::move(*result));
     }
     return true;
@@ -695,7 +1184,7 @@ void PrintTable(const std::vector<Result>& results, std::string_view backend) {
                     side == Side::Script ? "script-side, per iteration" : "C++-side, per operation", "ns", "net ns",
                     "iterations", "spread");
         for (const Result& result : results) {
-            if (result.side != side) {
+            if (result.side != side || result.rawOnly) {
                 continue;
             }
             std::printf("%-50s %12.2f ", result.label.c_str(), result.nanoseconds);
@@ -707,23 +1196,48 @@ void PrintTable(const std::vector<Result>& results, std::string_view backend) {
             std::printf("%12llu %8.2f\n", static_cast<unsigned long long>(result.iterations), result.spread);
         }
     }
+    // What the binding costs over the engine itself, where a row has a raw twin.
+    if (std::ranges::any_of(results, [](const Result& result) { return result.raw.has_value(); })) {
+        std::printf("\n%-50s %12s %12s %12s %8s\n", "unibind over V8 itself", "ub:: ns", "raw V8 ns", "overhead ns",
+                    "ratio");
+        for (const Result& result : results) {
+            if (!result.raw) {
+                continue;
+            }
+            if (result.rawOnly) {
+                std::printf("%-50s %12s %12.2f\n", result.label.c_str(), "", *result.raw);
+                continue;
+            }
+            std::printf("%-50s %12.2f %12.2f %12.2f %7.2fx\n", result.label.c_str(), result.nanoseconds, *result.raw,
+                        result.nanoseconds - *result.raw, *result.raw > 0.0 ? result.nanoseconds / *result.raw : 0.0);
+        }
+    }
     std::printf("\n");
 }
 
 /// One row per measurement. A comma or a semicolon in a label is written as a
 /// space, so nothing needs quoting and `Compare.cmake` can split a row as it is.
+/// `raw_ns` is the raw V8 twin's figure, on the V8 backend, and empty
+/// elsewhere; a row measured against V8 alone has the side `raw`.
 void PrintCsv(const std::vector<Result>& results, std::string_view backend) {
-    std::printf("backend,side,id,label,ns,net_ns,iterations,spread\n");
+    std::printf("backend,side,id,label,ns,net_ns,iterations,spread,raw_ns\n");
     for (const Result& result : results) {
         std::string label = result.label;
         std::ranges::replace_if(label, [](char c) { return c == ',' || c == ';'; }, ' ');
-        std::printf("%s,%s,%s,%s,%.3f,", std::string(backend).c_str(),
-                    result.side == Side::Script ? "script" : "native", result.id.c_str(), label.c_str(),
+        const char* side = result.side == Side::Script ? "script" : "native";
+        if (result.rawOnly) {
+            side = "raw";
+        }
+        std::printf("%s,%s,%s,%s,%.3f,", std::string(backend).c_str(), side, result.id.c_str(), label.c_str(),
                     result.nanoseconds);
-        if (result.net) {
+        if (result.net && !result.rawOnly) {
             std::printf("%.3f", *result.net);
         }
-        std::printf(",%llu,%.3f\n", static_cast<unsigned long long>(result.iterations), result.spread);
+        std::printf(",%llu,%.3f,", static_cast<unsigned long long>(result.iterations), result.spread);
+        if (result.raw) {
+            std::printf("%.3f", *result.raw);
+        }
+        std::printf("\n");
     }
 }
 

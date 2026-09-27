@@ -8,7 +8,10 @@
 # Each run's CSV and the merged tables are written to a new directory under
 # build/bench-compare/, named for the time it was made, and the tables are
 # printed as well. Each engine is run ROUNDS times, round-robin, and each figure
-# is the median over its rounds of the medians each run reports.
+# is the median over its rounds of the medians each run reports. The V8 runs
+# also carry each row's raw twin - the operation written against V8 directly -
+# and a third table sets the two side by side: what the binding costs over the
+# engine itself.
 #
 #   -DBUILD_ROOT=<dir>      where the build trees are (default: build)
 #   -DPRESETS=a;b;c         the trees, in V8, SpiderMonkey, CPython order
@@ -202,30 +205,50 @@ foreach(backend IN LISTS unibindBackends)
     foreach(run IN LISTS runs)
         file(STRINGS "${run}" lines)
         foreach(line IN LISTS lines)
+            # A run written on Windows ends its lines in CRLF.
+            string(REPLACE "\r" "" line "${line}")
             if(line MATCHES "^backend,")
                 continue()
             endif()
-            # backend,side,id,label,ns,net_ns,iterations,spread
-            if(NOT line MATCHES "^([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*)$")
+            # backend,side,id,label,ns,net_ns,iterations,spread[,raw_ns]
+            #
+            # raw_ns is the V8 build's raw twin of the row - the same operation
+            # written against V8 directly - and empty everywhere else. A row
+            # with the side `raw` has no unibind figure: it is measured against
+            # V8 alone, and is only shown beside the others in the V8 table.
+            # CMake keeps ten match groups, so the columns not read here are
+            # not captured.
+            if(NOT line MATCHES "^([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),[^,]*,[^,]*,[^,]*(,([^,]*))?$")
                 message(FATAL_ERROR "${run}: cannot read '${line}'")
             endif()
             set(side "${CMAKE_MATCH_2}")
             set(id "${CMAKE_MATCH_3}")
             set(label "${CMAKE_MATCH_4}")
             set(ns "${CMAKE_MATCH_5}")
+            set(raw "${CMAKE_MATCH_7}")
             if(NOT id IN_LIST ids)
                 list(APPEND ids "${id}")
                 set(side_${id} "${side}")
                 set(label_${id} "${label}")
             endif()
-            unibind_milli("${ns}" milli)
-            list(APPEND samples_${backend}_${id} "${milli}")
+            if(NOT side STREQUAL "raw")
+                unibind_milli("${ns}" milli)
+                list(APPEND samples_${backend}_${id} "${milli}")
+            endif()
+            if(NOT raw STREQUAL "")
+                unibind_milli("${raw}" milli)
+                list(APPEND rawsamples_${backend}_${id} "${milli}")
+            endif()
         endforeach()
     endforeach()
     foreach(id IN LISTS ids)
         if(DEFINED samples_${backend}_${id})
             unibind_median("${samples_${backend}_${id}}" median)
             set(ns_${backend}_${id} "${median}")
+        endif()
+        if(DEFINED rawsamples_${backend}_${id})
+            unibind_median("${rawsamples_${backend}_${id}}" median)
+            set(raw_${backend}_${id} "${median}")
         endif()
     endforeach()
     foreach(id IN LISTS ids)
@@ -283,6 +306,54 @@ foreach(side script native)
         string(APPEND markdown "${row} |\n")
     endforeach()
 endforeach()
+
+# What unibind costs over V8 itself: each row beside its raw twin, from the same
+# V8 runs. Written only when those runs carried twins.
+set(anyRaw FALSE)
+foreach(id IN LISTS ids)
+    if(DEFINED raw_v8_${id})
+        set(anyRaw TRUE)
+    endif()
+endforeach()
+if(anyRaw)
+    string(APPEND markdown
+        "\n| V8: unibind against V8's own API, ns | ub:: | raw V8 | overhead | ub:: ÷ raw |\n"
+        "|---|--:|--:|--:|--:|\n")
+    foreach(side script native)
+        foreach(id IN LISTS ids)
+            if(NOT DEFINED raw_v8_${id})
+                continue()
+            endif()
+            # A raw-only row sits with the script rows, where it belongs.
+            if(side_${id} STREQUAL "raw")
+                set(rowSide script)
+            else()
+                set(rowSide "${side_${id}}")
+            endif()
+            if(NOT rowSide STREQUAL side)
+                continue()
+            endif()
+            unibind_format_ns(${raw_v8_${id}} rawText)
+            if(DEFINED ns_v8_${id})
+                unibind_format_ns(${ns_v8_${id}} ubText)
+                math(EXPR overhead "${ns_v8_${id}} - ${raw_v8_${id}}")
+                if(overhead LESS 0)
+                    math(EXPR magnitude "0 - ${overhead}")
+                    unibind_format_ns(${magnitude} overheadText)
+                    set(overheadText "−${overheadText}")
+                else()
+                    unibind_format_ns(${overhead} overheadText)
+                endif()
+                unibind_ratio(${ns_v8_${id}} ${raw_v8_${id}} ratioText)
+            else()
+                set(ubText "—")
+                set(overheadText "")
+                set(ratioText "")
+            endif()
+            string(APPEND markdown "| ${label_${id}} | ${ubText} | ${rawText} | ${overheadText} | ${ratioText} |\n")
+        endforeach()
+    endforeach()
+endif()
 
 file(WRITE "${outDir}/tables.md" "${markdown}")
 message("${markdown}")
