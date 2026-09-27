@@ -487,210 +487,201 @@ bool RunNativeSide(const Options& options, ub::Isolate& isolate, const ub::Conte
         return false;
     }
 
-    const auto add = [&](std::string_view id, std::string_view label, const Body& body, std::uint64_t firstGuess,
-                         std::uint64_t ceiling) {
-        auto result = Measure(options, Side::Native, id, label, body, firstGuess, ceiling);
+    auto script = ub::Script::Compile(context, "1 + 1");
+    if (!script) {
+        return false;
+    }
+
+    struct NativeWorkload {
+        std::string_view id;
+        std::string_view label;
+        Body body;
+        std::uint64_t firstGuess = 1000;
+    };
+    std::vector<NativeWorkload> workloads;
+    workloads.push_back(NativeWorkload{"object-new", "Object::New",
+                                       [&](std::uint64_t n) {
+                                           for (std::uint64_t i = 0; i < n; ++i) {
+                                               const ub::HandleScope inner(isolate);
+                                               auto made = ub::Object::New(context);
+                                               g_sink += made ? 1 : 0;
+                                           }
+                                           return true;
+                                       },
+                                       1000});
+    workloads.push_back(NativeWorkload{"get-by-handle", "Object::Get of an Object::New object by key handle",
+                                       [&](std::uint64_t n) {
+                                           for (std::uint64_t i = 0; i < n; ++i) {
+                                               const ub::HandleScope inner(isolate);
+                                               auto value = object->Get(context, *key);
+                                               g_sink += value ? value->To<ub::Integer>()->Int32Value() : 0;
+                                           }
+                                           return true;
+                                       },
+                                       1000});
+    workloads.push_back(NativeWorkload{"get-by-name", "Object::Get of an Object::New object by string_view",
+                                       [&](std::uint64_t n) {
+                                           for (std::uint64_t i = 0; i < n; ++i) {
+                                               const ub::HandleScope inner(isolate);
+                                               auto value = object->Get(context, "property");
+                                               g_sink += value ? 1 : 0;
+                                           }
+                                           return true;
+                                       },
+                                       1000});
+    workloads.push_back(NativeWorkload{"get-script-object", "Object::Get of a script object by key handle",
+                                       [&](std::uint64_t n) {
+                                           for (std::uint64_t i = 0; i < n; ++i) {
+                                               const ub::HandleScope inner(isolate);
+                                               auto value = scriptObjectAsObject->Get(context, *xKey);
+                                               g_sink += value ? value->To<ub::Integer>()->Int32Value() : 0;
+                                           }
+                                           return true;
+                                       },
+                                       1000});
+    workloads.push_back(NativeWorkload{
+        "set-by-handle", "Object::Set of an Object::New object by key handle",
+        [&](std::uint64_t n) {
+            for (std::uint64_t i = 0; i < n; ++i) {
+                const ub::HandleScope inner(isolate);
+                const bool set =
+                    object->Set(context, *key, ub::Integer::New(isolate, static_cast<std::int32_t>(i & 0xffU)))
+                        .value_or(false);
+                g_sink += set ? 1 : 0;
+            }
+            return true;
+        },
+        1000});
+    workloads.push_back(NativeWorkload{"call-native", "Function::Call of a native function",
+                                       [&](std::uint64_t n) {
+                                           for (std::uint64_t i = 0; i < n; ++i) {
+                                               const ub::HandleScope inner(isolate);
+                                               auto result = function->Call(context, context.GlobalObject());
+                                               g_sink += result ? 1 : 0;
+                                           }
+                                           return true;
+                                       },
+                                       1000});
+    workloads.push_back(NativeWorkload{"call-script", "Function::Call of a script function",
+                                       [&](std::uint64_t n) {
+                                           for (std::uint64_t i = 0; i < n; ++i) {
+                                               const ub::HandleScope inner(isolate);
+                                               const std::array<ub::Local<ub::Value>, 1> arguments{
+                                                   ub::Integer::New(isolate, static_cast<std::int32_t>(i & 0xffU))};
+                                               auto result = inc->Call(context, ub::Undefined(isolate), arguments);
+                                               if (!result) {
+                                                   return false;
+                                               }
+                                               g_sink += result->To<ub::Integer>() ? 1 : 0;
+                                           }
+                                           return true;
+                                       },
+                                       1000});
+    workloads.push_back(NativeWorkload{"evaluate", "Evaluate(\"1 + 1\") - compile and run",
+                                       [&](std::uint64_t n) {
+                                           for (std::uint64_t i = 0; i < n; ++i) {
+                                               const ub::HandleScope inner(isolate);
+                                               auto result = ub::Evaluate(context, "1 + 1");
+                                               if (!result) {
+                                                   return false;
+                                               }
+                                               g_sink += 1;
+                                           }
+                                           return true;
+                                       },
+                                       100});
+    workloads.push_back(NativeWorkload{"script-run", "Script::Run of \"1 + 1\" compiled once",
+                                       [&](std::uint64_t n) {
+                                           for (std::uint64_t i = 0; i < n; ++i) {
+                                               const ub::HandleScope inner(isolate);
+                                               auto result = script->Run(context);
+                                               if (!result) {
+                                                   return false;
+                                               }
+                                               g_sink += 1;
+                                           }
+                                           return true;
+                                       },
+                                       1000});
+    workloads.push_back(NativeWorkload{"context-new", "Context::New + destroy",
+                                       [&](std::uint64_t n) {
+                                           for (std::uint64_t i = 0; i < n; ++i) {
+                                               const ub::HandleScope inner(isolate);
+                                               auto made = ub::Context::New(isolate);
+                                               if (!made) {
+                                                   return false;
+                                               }
+                                           }
+                                           return true;
+                                       },
+                                       10});
+    workloads.push_back(NativeWorkload{"frame", "open and close a HandleScope",
+                                       [&](std::uint64_t n) {
+                                           for (std::uint64_t i = 0; i < n; ++i) {
+                                               const ub::HandleScope inner(isolate);
+                                               g_sink += 1;
+                                           }
+                                           return true;
+                                       },
+                                       1000});
+    workloads.push_back(
+        NativeWorkload{"handle-create", "create a handle",
+                       [&](std::uint64_t n) {
+                           // A fresh frame every 1024 handles, so this measures appending to a
+                           // frame rather than one frame growing without bound.
+                           std::uint64_t made = 0;
+                           while (made < n) {
+                               const ub::HandleScope inner(isolate);
+                               const std::uint64_t chunk = std::min<std::uint64_t>(1024, n - made);
+                               for (std::uint64_t i = 0; i < chunk; ++i) {
+                                   g_sink += ub::Integer::New(isolate, static_cast<std::int32_t>(i)).Int32Value();
+                               }
+                               made += chunk;
+                           }
+                           return true;
+                       },
+                       1000});
+    workloads.push_back(NativeWorkload{"handle-read", "read a handle",
+                                       [&](std::uint64_t n) {
+                                           const ub::HandleScope inner(isolate);
+                                           const auto value = ub::Integer::New(isolate, 3);
+                                           for (std::uint64_t i = 0; i < n; ++i) {
+                                               g_sink += value.Int32Value();
+                                           }
+                                           return true;
+                                       },
+                                       1000});
+    workloads.push_back(NativeWorkload{"handle-escape", "escape a handle",
+                                       [&](std::uint64_t n) {
+                                           for (std::uint64_t i = 0; i < n; ++i) {
+                                               const ub::HandleScope outer(isolate);
+                                               ub::EscapableHandleScope inner(isolate);
+                                               g_sink += inner.Escape(ub::Integer::New(isolate, 1)).Int32Value();
+                                           }
+                                           return true;
+                                       },
+                                       1000});
+    workloads.push_back(NativeWorkload{"global", "create and release a Global",
+                                       [&](std::uint64_t n) {
+                                           for (std::uint64_t i = 0; i < n; ++i) {
+                                               const ub::Global<ub::Object> root(isolate, *object);
+                                               g_sink += root.IsEmpty() ? 0 : 1;
+                                           }
+                                           return true;
+                                       },
+                                       1000});
+
+    constexpr std::uint64_t kMany = std::uint64_t{1} << 32U;
+    for (const NativeWorkload& workload : workloads) {
+        auto result =
+            Measure(options, Side::Native, workload.id, workload.label, workload.body, workload.firstGuess, kMany);
         if (!result) {
-            std::fprintf(stderr, "bench: %s failed\n", std::string(id).c_str());
+            std::fprintf(stderr, "bench: %s failed\n", std::string(workload.id).c_str());
             return false;
         }
         results.push_back(std::move(*result));
-        return true;
-    };
-    constexpr std::uint64_t kMany = std::uint64_t{1} << 32U;
-
-    const bool ok =
-        add(
-            "object-new", "Object::New",
-            [&](std::uint64_t n) {
-                for (std::uint64_t i = 0; i < n; ++i) {
-                    const ub::HandleScope inner(isolate);
-                    auto made = ub::Object::New(context);
-                    g_sink += made ? 1 : 0;
-                }
-                return true;
-            },
-            1000, kMany) &&
-        add(
-            "get-by-handle", "Object::Get of an Object::New object by key handle",
-            [&](std::uint64_t n) {
-                for (std::uint64_t i = 0; i < n; ++i) {
-                    const ub::HandleScope inner(isolate);
-                    auto value = object->Get(context, *key);
-                    g_sink += value ? value->To<ub::Integer>()->Int32Value() : 0;
-                }
-                return true;
-            },
-            1000, kMany) &&
-        add(
-            "get-by-name", "Object::Get of an Object::New object by string_view",
-            [&](std::uint64_t n) {
-                for (std::uint64_t i = 0; i < n; ++i) {
-                    const ub::HandleScope inner(isolate);
-                    auto value = object->Get(context, "property");
-                    g_sink += value ? 1 : 0;
-                }
-                return true;
-            },
-            1000, kMany) &&
-        add(
-            "get-script-object", "Object::Get of a script object by key handle",
-            [&](std::uint64_t n) {
-                for (std::uint64_t i = 0; i < n; ++i) {
-                    const ub::HandleScope inner(isolate);
-                    auto value = scriptObjectAsObject->Get(context, *xKey);
-                    g_sink += value ? value->To<ub::Integer>()->Int32Value() : 0;
-                }
-                return true;
-            },
-            1000, kMany) &&
-        add(
-            "set-by-handle", "Object::Set of an Object::New object by key handle",
-            [&](std::uint64_t n) {
-                for (std::uint64_t i = 0; i < n; ++i) {
-                    const ub::HandleScope inner(isolate);
-                    const bool set =
-                        object->Set(context, *key, ub::Integer::New(isolate, static_cast<std::int32_t>(i & 0xffU)))
-                            .value_or(false);
-                    g_sink += set ? 1 : 0;
-                }
-                return true;
-            },
-            1000, kMany) &&
-        add(
-            "call-native", "Function::Call of a native function",
-            [&](std::uint64_t n) {
-                for (std::uint64_t i = 0; i < n; ++i) {
-                    const ub::HandleScope inner(isolate);
-                    auto result = function->Call(context, context.GlobalObject());
-                    g_sink += result ? 1 : 0;
-                }
-                return true;
-            },
-            1000, kMany) &&
-        add(
-            "call-script", "Function::Call of a script function",
-            [&](std::uint64_t n) {
-                for (std::uint64_t i = 0; i < n; ++i) {
-                    const ub::HandleScope inner(isolate);
-                    const std::array<ub::Local<ub::Value>, 1> arguments{
-                        ub::Integer::New(isolate, static_cast<std::int32_t>(i & 0xffU))};
-                    auto result = inc->Call(context, ub::Undefined(isolate), arguments);
-                    if (!result) {
-                        return false;
-                    }
-                    g_sink += result->To<ub::Integer>() ? 1 : 0;
-                }
-                return true;
-            },
-            1000, kMany) &&
-        add(
-            "evaluate", "Evaluate(\"1 + 1\") - compile and run",
-            [&](std::uint64_t n) {
-                for (std::uint64_t i = 0; i < n; ++i) {
-                    const ub::HandleScope inner(isolate);
-                    auto result = ub::Evaluate(context, "1 + 1");
-                    if (!result) {
-                        return false;
-                    }
-                    g_sink += 1;
-                }
-                return true;
-            },
-            100, kMany) &&
-        [&] {
-            auto script = ub::Script::Compile(context, "1 + 1");
-            if (!script) {
-                return false;
-            }
-            return add(
-                "script-run", "Script::Run of \"1 + 1\" compiled once",
-                [&](std::uint64_t n) {
-                    for (std::uint64_t i = 0; i < n; ++i) {
-                        const ub::HandleScope inner(isolate);
-                        auto result = script->Run(context);
-                        if (!result) {
-                            return false;
-                        }
-                        g_sink += 1;
-                    }
-                    return true;
-                },
-                1000, kMany);
-        }() &&
-        add(
-            "context-new", "Context::New + destroy",
-            [&](std::uint64_t n) {
-                for (std::uint64_t i = 0; i < n; ++i) {
-                    const ub::HandleScope inner(isolate);
-                    auto made = ub::Context::New(isolate);
-                    if (!made) {
-                        return false;
-                    }
-                }
-                return true;
-            },
-            10, kMany) &&
-        add(
-            "frame", "open and close a HandleScope",
-            [&](std::uint64_t n) {
-                for (std::uint64_t i = 0; i < n; ++i) {
-                    const ub::HandleScope inner(isolate);
-                    g_sink += 1;
-                }
-                return true;
-            },
-            1000, kMany) &&
-        add(
-            "handle-create", "create a handle",
-            [&](std::uint64_t n) {
-                // A fresh frame every 1024 handles, so this measures appending to a
-                // frame rather than one frame growing without bound.
-                std::uint64_t made = 0;
-                while (made < n) {
-                    const ub::HandleScope inner(isolate);
-                    const std::uint64_t chunk = std::min<std::uint64_t>(1024, n - made);
-                    for (std::uint64_t i = 0; i < chunk; ++i) {
-                        g_sink += ub::Integer::New(isolate, static_cast<std::int32_t>(i)).Int32Value();
-                    }
-                    made += chunk;
-                }
-                return true;
-            },
-            1000, kMany) &&
-        add(
-            "handle-read", "read a handle",
-            [&](std::uint64_t n) {
-                const ub::HandleScope inner(isolate);
-                const auto value = ub::Integer::New(isolate, 3);
-                for (std::uint64_t i = 0; i < n; ++i) {
-                    g_sink += value.Int32Value();
-                }
-                return true;
-            },
-            1000, kMany) &&
-        add(
-            "handle-escape", "escape a handle",
-            [&](std::uint64_t n) {
-                for (std::uint64_t i = 0; i < n; ++i) {
-                    const ub::HandleScope outer(isolate);
-                    ub::EscapableHandleScope inner(isolate);
-                    g_sink += inner.Escape(ub::Integer::New(isolate, 1)).Int32Value();
-                }
-                return true;
-            },
-            1000, kMany) &&
-        add(
-            "global", "create and release a Global",
-            [&](std::uint64_t n) {
-                for (std::uint64_t i = 0; i < n; ++i) {
-                    const ub::Global<ub::Object> root(isolate, *object);
-                    g_sink += root.IsEmpty() ? 0 : 1;
-                }
-                return true;
-            },
-            1000, kMany);
-    return ok;
+    }
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -789,7 +780,7 @@ int main(int argc, char** argv) {
         } else if (argument == "--target-ms" && hasValue) {
             options.targetMilliseconds = std::max(std::strtod(arguments[++i], nullptr), 1.0);
         } else if (argument == "--repetitions" && hasValue) {
-            options.repetitions = std::max(std::atoi(arguments[++i]), 1);
+            options.repetitions = static_cast<int>(std::clamp(std::strtol(arguments[++i], nullptr, 10), 1L, 1000L));
         } else {
             std::fprintf(stderr, "usage: unibind_bench [--csv] [--quick] [--target-ms N] [--repetitions N]\n");
             return 2;
