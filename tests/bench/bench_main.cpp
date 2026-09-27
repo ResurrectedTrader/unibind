@@ -228,6 +228,8 @@ var scriptObject = {x: 1};
 var writeTarget = {x: 0};
 function inc(x) { return x + 1; }
 var items = [1, 1, 1, 1, 1, 1, 1, 1];
+var shapes = [];
+for (let k = 0; k < 8; ++k) shapes.push({x: 1});
 var small = {a: 1, b: 'two', c: [1, 2, 3]};
 )";
 
@@ -245,6 +247,7 @@ def inc(x):
     return x + 1
 
 items = [1, 1, 1, 1, 1, 1, 1, 1]
+shapes = [Plain(1) for _ in range(8)]
 small = {'a': 1, 'b': 'two', 'c': [1, 2, 3]}
 )";
 
@@ -295,6 +298,14 @@ constexpr std::array kScriptWorkloads{
                    .label = "read an array element (a[i & 7])",
                    .js = {.pre = "const a = items;", .body = "s += a[i & 7];"},
                    .py = {.pre = "a = items", .body = "s += a[i & 7]"}},
+    // The row above with a property read added. The script-object row reads
+    // one object, and a JIT hoists that load out of the loop; eight objects of
+    // one shape, one per iteration, leave a load it has to do - so this row
+    // less the one above is a property read the JIT could not remove.
+    ScriptWorkload{.id = "script-object-read-varying",
+                   .label = "read a property of one of 8 script objects (a[i & 7].x)",
+                   .js = {.pre = "const a = shapes;", .body = "s += a[i & 7].x;"},
+                   .py = {.pre = "a = shapes", .body = "s += a[i & 7].x"}},
     ScriptWorkload{.id = "typed-array-read",
                    .label = "read a typed array element (a[i & 7])",
                    .js = {.pre = "const a = typed;", .body = "s += a[i & 7];"},
