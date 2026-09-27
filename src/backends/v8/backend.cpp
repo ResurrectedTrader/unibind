@@ -428,6 +428,11 @@ struct ContextRec {
     /// them. See `GetPrototype` and `SetPrototype`.
     v8::Global<v8::Function> getPrototypeOf;
     v8::Global<v8::Function> setPrototypeOf;
+    /// The scripts whose last run was in this realm, and which keep it bound -
+    /// the head of a list threaded through `ScriptRec`. Each is unbound when
+    /// this record goes, so that no script's cache outlives the realm or keeps
+    /// it alive. See `ScriptRec::bound`.
+    ScriptRec* boundScripts = nullptr;
 };
 
 /// Compiled source, kept *unbound* - not tied to the realm it was compiled in.
@@ -435,7 +440,7 @@ struct ContextRec {
 /// `v8::Script` is bound to a context and keeps looking at that context's
 /// globals whatever you pass to `Run`, which would make `Script::Run`'s context
 /// parameter a lie the moment a second realm exists. `v8::UnboundScript` is the
-/// facility for exactly this: compile once, bind per run.
+/// facility for exactly this: compile once, bind per realm.
 struct ScriptRec {
     Isolate* owner = nullptr;
     v8::Global<v8::UnboundScript> handle;
@@ -443,7 +448,56 @@ struct ScriptRec {
     /// a plain compile and false for a rejected blob - to a caller those are
     /// the same thing, which is that this compile paid full price.
     bool usedCache = false;
+    /// The script bound to the realm it last ran in, so that running it there
+    /// again does not bind it again: binding makes a new function each time,
+    /// and was most of what a `Run` cost. One realm, the last - a script run
+    /// in turn across several binds on every change, as it always did.
+    ///
+    /// A bound script holds its realm, so the cache follows the realm's
+    /// record: the script is on `boundRealm->boundScripts`, and `ReleaseContext`
+    /// unbinds it when that record goes. Keyed on the record rather than on
+    /// the V8 context, because a record is what the embedder's `Context` owns.
+    ContextRec* boundRealm = nullptr;
+    v8::Global<v8::Script> bound;
+    ScriptRec* previousBound = nullptr;
+    ScriptRec* nextBound = nullptr;
 };
+
+namespace {
+
+/// Drop `script`'s bound copy, if it has one, and take it off its realm's list.
+void Unbind(ScriptRec* script) noexcept {
+    ContextRec* realm = script->boundRealm;
+    if (realm == nullptr) {
+        return;
+    }
+    if (script->previousBound != nullptr) {
+        script->previousBound->nextBound = script->nextBound;
+    } else {
+        realm->boundScripts = script->nextBound;
+    }
+    if (script->nextBound != nullptr) {
+        script->nextBound->previousBound = script->previousBound;
+    }
+    script->previousBound = nullptr;
+    script->nextBound = nullptr;
+    script->boundRealm = nullptr;
+    script->bound.Reset();
+}
+
+/// Put `script`, bound to `realm`, at the head of that realm's list.
+void BindTo(ScriptRec* script, ContextRec* realm, v8::Local<v8::Script> bound) {
+    script->bound.Reset(realm->owner->impl().isolate, bound);
+    script->boundRealm = realm;
+    script->previousBound = nullptr;
+    script->nextBound = realm->boundScripts;
+    if (realm->boundScripts != nullptr) {
+        realm->boundScripts->previousBound = script;
+    }
+    realm->boundScripts = script;
+}
+
+}  // namespace
 
 struct GlobalNode {
     Isolate* owner = nullptr;
@@ -3420,6 +3474,11 @@ void RetainContext(ContextRec* rec) noexcept {
 
 void ReleaseContext(ContextRec* rec) noexcept {
     if (rec != nullptr && --rec->refs == 0) {
+        // A script still bound here would keep the realm alive, and would be
+        // checked against a record that is about to be freed.
+        while (rec->boundScripts != nullptr) {
+            Unbind(rec->boundScripts);
+        }
         --rec->owner->impl().embedderRefs;
         delete rec;
     }
@@ -3595,6 +3654,7 @@ void ReleaseScript(ScriptRec* script) noexcept {
     if (script == nullptr) {
         return;
     }
+    Unbind(script);
     --script->owner->impl().embedderRefs;
     delete script;
 }
@@ -3607,10 +3667,19 @@ std::optional<Slot> RunScript(const Context& context, ScriptRec* script) {
     if (Stopped(owner)) {
         return std::nullopt;
     }
-    // Bind to the realm being run in, not the one that compiled it, so the code
-    // sees this realm's globals. See unibind/script.h.
+    // Bound to the realm being run in, not the one that compiled it, so the
+    // code sees this realm's globals (unibind/script.h) - once per realm it
+    // runs in, not once per run: see `ScriptRec::bound`.
     const EnterUnlessCurrent entered(context);
-    v8::Local<v8::Script> bound = script->handle.Get(Raw(owner))->BindToCurrentContext();
+    ContextRec* realm = RecOf(context);
+    v8::Local<v8::Script> bound;
+    if (script->boundRealm == realm) {
+        bound = script->bound.Get(Raw(owner));
+    } else {
+        Unbind(script);
+        bound = script->handle.Get(Raw(owner))->BindToCurrentContext();
+        BindTo(script, realm, bound);
+    }
     v8::Local<v8::Value> result;
     if (!bound->Run(Raw(context)).ToLocal(&result)) {
         (void)Stopped(owner);

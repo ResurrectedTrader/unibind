@@ -108,6 +108,39 @@ TEST_CASE("scripts: a script sees the globals of the realm it runs in") {
     CHECK(ub_test::TextOf(*script->Run(fixture.context)) == "first");
 }
 
+TEST_CASE("scripts: a script outlives a realm it ran in, and runs again in the same one") {
+    ub_test::Fixture fixture;
+
+    REQUIRE(ub::Evaluate(fixture.context, "globalThis.where = 'first'").has_value());
+    const auto script = ub::Script::Compile(fixture.context, "where");
+    const auto other = ub::Script::Compile(fixture.context, "where + '!'");
+    REQUIRE(script.has_value());
+    REQUIRE(other.has_value());
+
+    {
+        auto doomed = ub::Context::New(fixture.iso());
+        REQUIRE(doomed.has_value());
+        {
+            ub::ContextScope entered(*doomed);
+            REQUIRE(ub::Evaluate(*doomed, "globalThis.where = 'doomed'").has_value());
+        }
+        // Twice each, so that the second run is the one a backend may answer
+        // from whatever it kept of the first; and two scripts, so that the
+        // realm has more than one to let go of when it goes.
+        CHECK(ub_test::TextOf(*script->Run(*doomed)) == "doomed");
+        CHECK(ub_test::TextOf(*script->Run(*doomed)) == "doomed");
+        CHECK(ub_test::TextOf(*other->Run(*doomed)) == "doomed!");
+        CHECK(ub_test::TextOf(*other->Run(*doomed)) == "doomed!");
+    }
+    fixture.iso().RequestGarbageCollection();
+
+    CHECK(ub_test::TextOf(*script->Run(fixture.context)) == "first");
+    CHECK(ub_test::TextOf(*script->Run(fixture.context)) == "first");
+    CHECK(ub_test::TextOf(*other->Run(fixture.context)) == "first!");
+    REQUIRE(ub::Evaluate(fixture.context, "globalThis.where = 'changed'").has_value());
+    CHECK(ub_test::TextOf(*script->Run(fixture.context)) == "changed");
+}
+
 TEST_CASE("scripts: an empty script is not a failure") {
     ub_test::Fixture fixture;
 

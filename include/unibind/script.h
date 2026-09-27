@@ -334,10 +334,10 @@ class Script {
     ///
     /// That is the whole point of compiled source being an artefact rather
     /// than a handle (see above): compile once, run it in every sandbox. An
-    /// engine that binds compiled code to a realm has to rebind it per run;
-    /// the alternative - the code keeps looking at the realm it was compiled
-    /// in, whatever you pass - makes the parameter a lie and makes a compiled
-    /// script useless for the one job it is cached for.
+    /// engine that binds compiled code to a realm has to rebind it whenever
+    /// the realm changes; the alternative - the code keeps looking at the
+    /// realm it was compiled in, whatever you pass - makes the parameter a lie
+    /// and makes a compiled script useless for the one job it is cached for.
     ///
     /// Empty if it threw; the exception is pending.
     [[nodiscard]] std::optional<Local<Value>> Run(const Context& context) const {
