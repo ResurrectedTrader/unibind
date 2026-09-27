@@ -204,7 +204,8 @@ ub::Intercepted AnswerOne(const ub::Local<ub::Name>& property, const ub::Propert
 /// so every value the loop touches is a local in both - a Python global is a
 /// dictionary lookup and a JavaScript one a context-slot load, and neither is
 /// what a row is about. Every body is the baseline's `s += 1` with the
-/// operation put in, so the difference from the baseline is the operation.
+/// operation put in, so the difference from the baseline is the operation -
+/// except the string row, whose net figure also carries a length check.
 struct Source {
     std::string_view pre;
     std::string_view body;
@@ -298,10 +299,16 @@ constexpr std::array kScriptWorkloads{
                    .label = "read a typed array element (a[i & 7])",
                    .js = {.pre = "const a = typed;", .body = "s += a[i & 7];"},
                    .py = {.pre = "a = typed", .body = "s += a[i & 7]"}},
-    ScriptWorkload{.id = "string-append",
-                   .label = "append to a string",
-                   .js = {.pre = "let t = '';", .body = "t += 'x';", .result = "t.length"},
-                   .py = {.pre = "t = ''", .body = "t += 'x'", .result = "len(t)"}},
+    // A fresh string every 1024 characters: one string grown for all N would be
+    // hundreds of megabytes by the time the calibration was done, which is a
+    // test of the engine's heap limit rather than of appending.
+    ScriptWorkload{
+        .id = "string-append",
+        .label = "append to a string (a new one every 1024)",
+        .js = {.pre = "let t = '';",
+               .body = "t += 'x'; if (t.length === 1024) { s += 1024; t = ''; }",
+               .result = "s + t.length"},
+        .py = {.pre = "t = ''", .body = "t += 'x'\nif len(t) == 1024: s += 1024; t = ''", .result = "s + len(t)"}},
     ScriptWorkload{.id = "json",
                    .label = "JSON.stringify / json.dumps of a small object",
                    .js = {.pre = "const o = small;", .body = "s += JSON.stringify(o).length;"},
@@ -323,8 +330,13 @@ std::string Define(bool python, const ScriptWorkload& workload) {
     const std::string name = FunctionName(workload.id);
     if (python) {
         const Source& s = workload.py;
+        // A body of several lines is indented as the loop's.
+        std::string body(s.body);
+        for (std::size_t at = body.find('\n'); at != std::string::npos; at = body.find('\n', at + 1)) {
+            body.insert(at + 1, "        ");
+        }
         return "def " + name + "(n):\n    " + std::string(s.pre) + "\n    s = 0\n    for i in range(n):\n        " +
-               std::string(s.body) + "\n    return " + std::string(s.result) + "\n";
+               body + "\n    return " + std::string(s.result) + "\n";
     }
     const Source& s = workload.js;
     return "function " + name + "(n) { " + std::string(s.pre) + " let s = 0; for (let i = 0; i < n; ++i) { " +
