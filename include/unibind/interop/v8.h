@@ -28,6 +28,12 @@
 ///     leaves its handles and frames as they were, which is what makes it safe.
 ///     What it must not do is make or free unibind handles from inside a V8
 ///     callback unibind did not install.
+///   * Inside a unibind callback, enter a realm with `ub::ContextScope`, not
+///     with V8's `Context::Enter` or `Context::Scope`. The backend finds a
+///     callback's realm (`GetContext()`) when first asked, and settles it
+///     before a `ContextScope` changes the current realm - which V8's own
+///     calls, invisible to it, do not do. Ask before entering, or enter the
+///     unibind way.
 ///
 /// The translation unit that uses these includes V8's headers itself, with
 /// `V8_GN_HEADER` defined (so the layout matches the library), and includes

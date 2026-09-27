@@ -115,6 +115,22 @@ namespace detail {
 // declared here and defined below.
 struct AccessorRecord;
 struct InstanceRecord;
+
+/// The realm a callback was called in, found the first time the callback asks
+/// for it rather than on every call: most callbacks never do, and finding it
+/// is a call into V8, a handle and an embedder-data read.
+///
+/// Late, but not wrong. The one thing that changes the isolate's current realm
+/// while a callback runs, and is still in force when it asks, is a
+/// `ContextScope` the callback opened - script it calls into leaves the realm
+/// as it found it - so `ContextEnter` settles the innermost callback's realm
+/// before it enters anything. That is the only callback that can be asking:
+/// an outer one is suspended until everything inside it has returned and
+/// closed its scopes. The isolate keeps that innermost one in `innermostCall`.
+struct CallRealm {
+    Context context;
+    CallRealm* outer = nullptr;
+};
 }  // namespace detail
 
 // ---------------------------------------------------------------------------
@@ -221,7 +237,35 @@ struct Isolate::Impl {
     Inspector* inspector = nullptr;
     Inspector::Impl* inspectorImpl = nullptr;
     std::shared_ptr<InspectorDispatcher> inspectorDispatcher;
+    /// The innermost callback running, for `ContextEnter` to settle its realm
+    /// before it enters another. See `detail::CallRealm`.
+    detail::CallRealm* innermostCall = nullptr;
 };
+
+namespace {
+
+/// Hides the running callback from `ContextEnter` while V8 has called into
+/// this library for something else in the middle of it - an interrupt, a
+/// finalizer, a heap-limit or inspector callback. Those run wherever script
+/// happened to be, not in the callback's realm, so a `ContextScope` they open
+/// must not settle that callback's realm from there. See `detail::CallRealm`.
+class OutsideCallback {
+   public:
+    explicit OutsideCallback(Isolate& isolate) noexcept
+        : impl_(&isolate.impl()), saved_(std::exchange(isolate.impl().innermostCall, nullptr)) {}
+    ~OutsideCallback() { impl_->innermostCall = saved_; }
+
+    OutsideCallback(const OutsideCallback&) = delete;
+    OutsideCallback& operator=(const OutsideCallback&) = delete;
+    OutsideCallback(OutsideCallback&&) = delete;
+    OutsideCallback& operator=(OutsideCallback&&) = delete;
+
+   private:
+    Isolate::Impl* impl_;
+    detail::CallRealm* saved_;
+};
+
+}  // namespace
 
 namespace detail {
 
@@ -262,14 +306,30 @@ struct CallbackRecord {
 /// The V8 scope is constructed in place rather than held as a member, because
 /// escaping needs it destroyed before the deferred escapes are written into
 /// the parent - see EscapeSlot.
+///
+/// A frame opened for a FunctionCallback has no V8 scope of its own
+/// (`ownScope` false): V8 has one open around every such call. From script the
+/// call stub opens it and closes it as the callback returns, which is when this
+/// frame closes too; from the API (`Function::Call`, a `Get` that reaches an
+/// accessor) it is the entry point's own internal scope, closed as that call
+/// returns; from V8's C++ runtime it is the runtime operation's, closed when
+/// the operation is done. A second one inside it bought nothing and cost an
+/// open and a close per call. Such a frame is never escapable, so nothing
+/// needs its scope.
 struct Frame {
-    Frame(Isolate& owner, Frame* parent, const v8::FunctionCallbackInfo<v8::Value>* args, bool escapable)
+    Frame(Isolate& owner, Frame* parent, const v8::FunctionCallbackInfo<v8::Value>* args, bool escapable,
+          bool ownScope = true)
         : owner(&owner),
           parent(parent),
           epoch(owner.impl().nextEpoch++),
           args(args),
           argCount(args == nullptr ? 0U : static_cast<uint32_t>(args->Length())),
-          escapable(escapable) {
+          escapable(escapable),
+          scopeAlive(ownScope) {
+        assert((ownScope || !escapable) && "an escapable frame needs a scope of its own to escape from");
+        if (!ownScope) {
+            return;
+        }
         v8::Isolate* isolate = owner.impl().isolate;
         if (escapable) {
             ::new (static_cast<void*>(scopeStorage)) v8::EscapableHandleScope(isolate);
@@ -399,7 +459,7 @@ struct Frame {
     uint32_t argCount;
     bool escapable;
     bool escapeUsed = false;
-    bool scopeAlive = true;
+    bool scopeAlive;
     uint32_t count = 0;
     // Owned: the frame allocates each one lazily and it goes with the frame.
     std::unique_ptr<std::vector<v8::Local<v8::Value>>> overflow;
@@ -631,7 +691,8 @@ struct ReturnSink {
 struct CallbackState {
     Isolate* owner = nullptr;
     Frame* frame = nullptr;
-    Context context;
+    /// The realm the call is running in, settled on first ask: see `CallRealm`.
+    CallRealm* realm = nullptr;
     CallbackData data;
     v8::Local<v8::Object> receiver;
     v8::Local<v8::Object> holder;
@@ -1983,11 +2044,22 @@ class CallFrame {
     /// `args` is null for a callback with no argument list - an accessor read
     /// through an interceptor, say - which simply means the frame borrows
     /// nothing and every slot in it is its own.
+    ///
+    /// A call borrows V8's own handle scope as well as its arguments: V8 opens
+    /// one around every FunctionCallback (see `Frame`). A property hook keeps a
+    /// scope of its own, because V8 promises it none - the runtime calls
+    /// interceptors from C++ as often as from generated code, and a lookup
+    /// that asks one per key would otherwise keep every key's handles until it
+    /// was done.
     CallFrame(Isolate& isolate, const v8::FunctionCallbackInfo<v8::Value>* args) : isolate_(&isolate) {
-        frame_ = ::new (static_cast<void*>(storage_.bytes)) Frame(isolate, isolate.impl().current, args, false);
+        frame_ = ::new (static_cast<void*>(storage_.bytes))
+            Frame(isolate, isolate.impl().current, args, false, /*ownScope=*/args == nullptr);
         isolate.impl().current = frame_;
+        realm_.outer = isolate.impl().innermostCall;
+        isolate.impl().innermostCall = &realm_;
     }
     ~CallFrame() {
+        isolate_->impl().innermostCall = realm_.outer;
         isolate_->impl().current = frame_->parent;
         frame_->~Frame();
     }
@@ -1998,20 +2070,24 @@ class CallFrame {
     CallFrame& operator=(CallFrame&&) = delete;
 
     [[nodiscard]] Frame& frame() const noexcept { return *frame_; }
+    [[nodiscard]] CallRealm& realm() noexcept { return realm_; }
 
    private:
     Isolate* isolate_;
     Frame* frame_ = nullptr;
-    FrameStorage storage_{};
+    CallRealm realm_;
+    // Not zeroed: the frame is constructed into it at once, and zeroing a
+    // frame's worth of bytes on every call was a cost with nothing to show.
+    FrameStorage storage_;
 };
 
 /// The per-call state for anything V8 calls as a function: a native function,
 /// a template method, a class constructor, or one half of an accessor pair.
-[[nodiscard]] CallbackState CallState(Isolate& isolate, Frame& frame, const v8::FunctionCallbackInfo<v8::Value>& info,
-                                      CallbackData data) {
+[[nodiscard]] CallbackState CallState(Isolate& isolate, CallFrame& frame,
+                                      const v8::FunctionCallbackInfo<v8::Value>& info, CallbackData data) {
     return CallbackState{.owner = &isolate,
-                         .frame = &frame,
-                         .context = Context::FromRec(CurrentContextRec(info.GetIsolate())),
+                         .frame = &frame.frame(),
+                         .realm = &frame.realm(),
                          .data = data,
                          // V8 15.6 drops Holder() from a function call, so the
                          // receiver is all there is to report as either.
@@ -2081,7 +2157,7 @@ void FunctionTrampoline(const v8::FunctionCallbackInfo<v8::Value>& info) {
     auto* record = PointerFrom<CallbackRecord>(info.DataV2());
 
     CallFrame frame(isolate, &info);
-    CallbackState state = CallState(isolate, frame.frame(), info, record->data);
+    CallbackState state = CallState(isolate, frame, info, record->data);
     record->callback(CallbackInfo(state));
 }
 
@@ -2113,7 +2189,7 @@ void ValueFunctionTrampoline(const v8::FunctionCallbackInfo<v8::Value>& info) {
                                                                  ->Value(v8::kExternalPointerTypeTagDefault));
 
     CallFrame frame(isolate, &info);
-    CallbackState state = CallState(isolate, frame.frame(), info, {});
+    CallbackState state = CallState(isolate, frame, info, {});
     state.value = bundle->GetInternalField(VALUE_DATA_VALUE_FIELD).As<v8::Value>();
     callback(CallbackInfo(state));
 }
@@ -2187,7 +2263,11 @@ Isolate& CallbackIsolate(const CallbackState& state) noexcept {
     return *state.owner;
 }
 const Context& CallbackContext(const CallbackState& state) noexcept {
-    return state.context;
+    CallRealm& realm = *state.realm;
+    if (realm.context.IsEmpty()) {
+        realm.context = Context::FromRec(CurrentContextRec(Raw(*state.owner)));
+    }
+    return realm.context;
 }
 
 uint32_t CallbackArgumentCount(const CallbackState& state) noexcept {
@@ -2333,7 +2413,7 @@ void AccessorGetTrampoline(const v8::FunctionCallbackInfo<v8::Value>& info) {
     auto* record = PointerFrom<AccessorRecord>(info.DataV2());
 
     CallFrame frame(isolate, &info);
-    CallbackState state = CallState(isolate, frame.frame(), info, record->data);
+    CallbackState state = CallState(isolate, frame, info, record->data);
     const Slot name = Push(isolate, record->name.Get(Raw(isolate)));
     record->getter(Local<Name>::FromSlot(name), PropertyCallbackInfo(state));
 }
@@ -2346,7 +2426,7 @@ void AccessorSetTrampoline(const v8::FunctionCallbackInfo<v8::Value>& info) {
     auto* record = PointerFrom<AccessorRecord>(info.DataV2());
 
     CallFrame frame(isolate, &info);
-    CallbackState state = CallState(isolate, frame.frame(), info, record->data);
+    CallbackState state = CallState(isolate, frame, info, record->data);
     const Slot name = Push(isolate, record->name.Get(Raw(isolate)));
     // Slot 0 of the frame is the assigned value, borrowed from the call.
     const Slot value = info.Length() > 0 ? MakeSlot(frame.frame(), 0) : Push(isolate, v8::Undefined(Raw(isolate)));
@@ -2590,11 +2670,11 @@ namespace {
 /// receiver - which is why the two are the same object here. See the contract
 /// at the top of unibind/function.h.
 template <class Info>
-[[nodiscard]] CallbackState PropertyState(Isolate& isolate, Frame& frame, const Info& info, CallbackData data,
+[[nodiscard]] CallbackState PropertyState(Isolate& isolate, CallFrame& frame, const Info& info, CallbackData data,
                                           const ReturnSink& returns) {
     return CallbackState{.owner = &isolate,
-                         .frame = &frame,
-                         .context = Context::FromRec(CurrentContextRec(info.GetIsolate())),
+                         .frame = &frame.frame(),
+                         .realm = &frame.realm(),
                          .data = data,
                          .receiver = info.Holder(),
                          .holder = info.Holder(),
@@ -2640,7 +2720,7 @@ v8::Intercepted NamedGetter(v8::Local<v8::Name> property, const v8::PropertyCall
     }
     auto* handler = PointerFrom<NamedPropertyHandler>(info.DataV2());
     CallFrame frame(isolate, nullptr);
-    CallbackState state = PropertyState(isolate, frame.frame(), info, handler->data, PropertyValueReturn::SINK);
+    CallbackState state = PropertyState(isolate, frame, info, handler->data, PropertyValueReturn::SINK);
     const Slot name = Push(isolate, property);
     return RawIntercepted(isolate, handler->getter(Local<Name>::FromSlot(name), PropertyCallbackInfo(state)));
 }
@@ -2653,7 +2733,7 @@ v8::Intercepted NamedSetter(v8::Local<v8::Name> property, v8::Local<v8::Value> v
     }
     auto* handler = PointerFrom<NamedPropertyHandler>(info.DataV2());
     CallFrame frame(isolate, nullptr);
-    CallbackState state = PropertyState(isolate, frame.frame(), info, handler->data, DiscardReturn::SINK);
+    CallbackState state = PropertyState(isolate, frame, info, handler->data, DiscardReturn::SINK);
     const Slot name = Push(isolate, property);
     const Slot assigned = Push(isolate, value);
     return RawIntercepted(isolate, handler->setter(Local<Name>::FromSlot(name), Local<Value>::FromSlot(assigned),
@@ -2667,7 +2747,7 @@ v8::Intercepted NamedQuery(v8::Local<v8::Name> property, const v8::PropertyCallb
     }
     auto* handler = PointerFrom<NamedPropertyHandler>(info.DataV2());
     CallFrame frame(isolate, nullptr);
-    CallbackState state = PropertyState(isolate, frame.frame(), info, handler->data, DiscardReturn::SINK);
+    CallbackState state = PropertyState(isolate, frame, info, handler->data, DiscardReturn::SINK);
     const Slot name = Push(isolate, property);
     std::optional<PropertyAttribute> attributes =
         handler->query(Local<Name>::FromSlot(name), PropertyCallbackInfo(state));
@@ -2685,7 +2765,7 @@ v8::Intercepted NamedDeleter(v8::Local<v8::Name> property, const v8::PropertyCal
     }
     auto* handler = PointerFrom<NamedPropertyHandler>(info.DataV2());
     CallFrame frame(isolate, nullptr);
-    CallbackState state = PropertyState(isolate, frame.frame(), info, handler->data, DiscardReturn::SINK);
+    CallbackState state = PropertyState(isolate, frame, info, handler->data, DiscardReturn::SINK);
     const Slot name = Push(isolate, property);
     std::optional<bool> deleted = handler->deleter(Local<Name>::FromSlot(name), PropertyCallbackInfo(state));
     if (!deleted) {
@@ -2702,7 +2782,7 @@ void NamedEnumerator(const v8::PropertyCallbackInfo<v8::Array>& info) {
     }
     auto* handler = PointerFrom<NamedPropertyHandler>(info.DataV2());
     CallFrame frame(isolate, nullptr);
-    CallbackState state = PropertyState(isolate, frame.frame(), info, handler->data, DiscardReturn::SINK);
+    CallbackState state = PropertyState(isolate, frame, info, handler->data, DiscardReturn::SINK);
     WriteKeys(isolate, info, handler->enumerator(PropertyCallbackInfo(state)));
 }
 
@@ -2713,7 +2793,7 @@ v8::Intercepted IndexedGetter(uint32_t index, const v8::PropertyCallbackInfo<v8:
     }
     auto* handler = PointerFrom<IndexedPropertyHandler>(info.DataV2());
     CallFrame frame(isolate, nullptr);
-    CallbackState state = PropertyState(isolate, frame.frame(), info, handler->data, PropertyValueReturn::SINK);
+    CallbackState state = PropertyState(isolate, frame, info, handler->data, PropertyValueReturn::SINK);
     return RawIntercepted(isolate, handler->getter(index, PropertyCallbackInfo(state)));
 }
 
@@ -2725,7 +2805,7 @@ v8::Intercepted IndexedSetter(uint32_t index, v8::Local<v8::Value> value,
     }
     auto* handler = PointerFrom<IndexedPropertyHandler>(info.DataV2());
     CallFrame frame(isolate, nullptr);
-    CallbackState state = PropertyState(isolate, frame.frame(), info, handler->data, DiscardReturn::SINK);
+    CallbackState state = PropertyState(isolate, frame, info, handler->data, DiscardReturn::SINK);
     const Slot assigned = Push(isolate, value);
     return RawIntercepted(isolate,
                           handler->setter(index, Local<Value>::FromSlot(assigned), PropertyCallbackInfo(state)));
@@ -2738,7 +2818,7 @@ v8::Intercepted IndexedQuery(uint32_t index, const v8::PropertyCallbackInfo<v8::
     }
     auto* handler = PointerFrom<IndexedPropertyHandler>(info.DataV2());
     CallFrame frame(isolate, nullptr);
-    CallbackState state = PropertyState(isolate, frame.frame(), info, handler->data, DiscardReturn::SINK);
+    CallbackState state = PropertyState(isolate, frame, info, handler->data, DiscardReturn::SINK);
     std::optional<PropertyAttribute> attributes = handler->query(index, PropertyCallbackInfo(state));
     if (!attributes) {
         return RawIntercepted(isolate, Intercepted::No);
@@ -2754,7 +2834,7 @@ v8::Intercepted IndexedDeleter(uint32_t index, const v8::PropertyCallbackInfo<v8
     }
     auto* handler = PointerFrom<IndexedPropertyHandler>(info.DataV2());
     CallFrame frame(isolate, nullptr);
-    CallbackState state = PropertyState(isolate, frame.frame(), info, handler->data, DiscardReturn::SINK);
+    CallbackState state = PropertyState(isolate, frame, info, handler->data, DiscardReturn::SINK);
     std::optional<bool> deleted = handler->deleter(index, PropertyCallbackInfo(state));
     if (!deleted) {
         return RawIntercepted(isolate, Intercepted::No);
@@ -2770,7 +2850,7 @@ void IndexedEnumerator(const v8::PropertyCallbackInfo<v8::Array>& info) {
     }
     auto* handler = PointerFrom<IndexedPropertyHandler>(info.DataV2());
     CallFrame frame(isolate, nullptr);
-    CallbackState state = PropertyState(isolate, frame.frame(), info, handler->data, DiscardReturn::SINK);
+    CallbackState state = PropertyState(isolate, frame, info, handler->data, DiscardReturn::SINK);
     WriteKeys(isolate, info, handler->enumerator(PropertyCallbackInfo(state)));
 }
 
@@ -2840,6 +2920,7 @@ void DestroyNative(InstanceRecord& record) noexcept {
 void FinalizeNativeLate(const v8::WeakCallbackInfo<InstanceRecord>& data) {
     InstanceRecord* record = data.GetParameter();
     Isolate& owner = *record->owner;
+    const OutsideCallback outside(owner);
     DestroyNative(*record);
     owner.impl().liveNatives.erase(record);
 }
@@ -2953,7 +3034,7 @@ void ClassConstructTrampoline(const v8::FunctionCallbackInfo<v8::Value>& info) {
     NativeBox* box = nullptr;
     {
         CallFrame frame(isolate, &info);
-        CallbackState state = CallState(isolate, frame.frame(), info, {});
+        CallbackState state = CallState(isolate, frame, info, {});
         state.receiver = self;
         state.holder = self;
         // A class constructor answers with its native, never through the
@@ -3493,6 +3574,12 @@ Slot ContextGlobalObject(const Context& context) noexcept {
 }
 
 void ContextEnter(const Context& context, ContextScopeState& storage) noexcept {
+    // The realm the innermost callback was called in, before this changes it.
+    // See `CallRealm`.
+    CallRealm* call = OwnerOf(context).impl().innermostCall;
+    if (call != nullptr && call->context.IsEmpty()) {
+        call->context = Context::FromRec(CurrentContextRec(Raw(OwnerOf(context))));
+    }
     auto* state = ::new (static_cast<void*>(&storage)) ContextScopeState();
     state->context = Raw(context);
     state->context->Enter();
@@ -3765,6 +3852,7 @@ size_t OnNearHeapLimit(void* data, size_t currentLimit, size_t initialLimit) {
     if (isolate == nullptr || isolate->impl().heapLimitCallback == nullptr) {
         return currentLimit;
     }
+    const OutsideCallback outside(*isolate);
     const size_t answer =
         isolate->impl().heapLimitCallback(*isolate, currentLimit, initialLimit, isolate->impl().heapLimitData);
     // Clamped rather than trusted: a handler that answers with something below
@@ -4142,6 +4230,7 @@ void InterruptTrampoline(v8::Isolate* raw, void* data) {
     // the contract in unibind/isolate.h forbids the callback running script - so
     // there is nothing to set up and nothing to catch.
     (void)raw;
+    const OutsideCallback outside(*isolate);
     callback(*isolate, payload);
 }
 
@@ -4440,6 +4529,7 @@ void DrainDispatches(Isolate& isolate) {
 }
 
 void DispatchInterrupt(v8::Isolate* /*raw*/, void* data) {
+    const OutsideCallback outside(*static_cast<Isolate*>(data));
     DrainDispatches(*static_cast<Isolate*>(data));
 }
 
@@ -4464,6 +4554,7 @@ struct Inspector::Impl final : v8_inspector::V8InspectorClient {
     /// the pause - a session going was what kept it - the embedder's loop is
     /// not started for a pause that is already over.
     void runMessageLoopOnPause(int /*contextGroupId*/) override {
+        const OutsideCallback outside(*owner);
         settling = true;
         quitWhileSettling = false;
         Settle();
@@ -4474,13 +4565,17 @@ struct Inspector::Impl final : v8_inspector::V8InspectorClient {
         client->RunMessageLoopOnPause();
     }
     void quitMessageLoopOnPause() override {
+        const OutsideCallback outside(*owner);
         if (settling) {
             quitWhileSettling = true;
             return;
         }
         client->QuitMessageLoopOnPause();
     }
-    double currentTimeMS() override { return client->CurrentTimeMs(); }
+    double currentTimeMS() override {
+        const OutsideCallback outside(*owner);
+        return client->CurrentTimeMs();
+    }
 
     /// The realm announced most recently and not yet withdrawn - or collected,
     /// since what is kept here does not keep a realm alive.
@@ -4496,6 +4591,7 @@ struct Inspector::Impl final : v8_inspector::V8InspectorClient {
 
     std::unique_ptr<v8_inspector::StringBuffer> resourceNameToUrl(
         const v8_inspector::StringView& resourceName) override {
+        const OutsideCallback outside(*owner);
         auto url = client->ResourceNameToUrl(ToUtf8(resourceName, EightBit::Latin1));
         if (!url) {
             return nullptr;
@@ -4561,6 +4657,7 @@ struct InspectorSession::Impl final : v8_inspector::V8Inspector::Channel {
 
     void sendResponse(int /*callId*/, std::unique_ptr<v8_inspector::StringBuffer> message) override {
         if (client != nullptr) {
+            const OutsideCallback outside(*owner);
             client->SendProtocolMessage(ToUtf8(message->string(), EightBit::Utf8));
         }
     }
@@ -4572,6 +4669,7 @@ struct InspectorSession::Impl final : v8_inspector::V8Inspector::Channel {
         // embedder does inside it; `this` may be put aside for `Settle` by then.
         Inspector::Impl& counted = *inspector;
         ++counted.notifying;
+        const OutsideCallback outside(*owner);
         client->SendProtocolMessage(ToUtf8(message->string(), EightBit::Utf8));
         --counted.notifying;
     }

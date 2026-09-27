@@ -173,3 +173,112 @@ TEST_CASE("realms: many realms can live at once") {
         CHECK(ub_test::EvalInt(realms[static_cast<std::size_t>(i)], "index") == i);
     }
 }
+
+namespace {
+
+/// What the callbacks below were called with, and what they saw.
+struct RealmProbe {
+    ub::Context* enterFirst = nullptr;
+    ub::Context* scriptRealm = nullptr;
+    ub::Context* caller = nullptr;
+    ub::Global<ub::Function>* spin = nullptr;
+    ub::detail::ContextRec* seen = nullptr;
+    ub::detail::ContextRec* seenInside = nullptr;
+    bool interrupted = false;
+};
+
+/// Enters another realm, and only then asks which one it was called in.
+void AskAfterEntering(const ub::CallbackInfo& info) {
+    auto* probe = info.Data<RealmProbe>();
+    ub::ContextScope entered(*probe->enterFirst);
+    probe->seen = info.GetContext().rec();
+}
+
+void RecordRealm(const ub::CallbackInfo& info) {
+    info.Data<RealmProbe>()->seenInside = info.GetContext().rec();
+}
+
+/// Runs script in another realm - which calls back into native code - and
+/// only then asks which realm it was called in.
+void AskAfterScript(const ub::CallbackInfo& info) {
+    auto* probe = info.Data<RealmProbe>();
+    {
+        ub::ContextScope entered(*probe->scriptRealm);
+        CHECK(ub::Evaluate(*probe->scriptRealm, "record(); for (let i = 0; i < 100000; ++i) {} 1").has_value());
+    }
+    probe->seen = info.GetContext().rec();
+}
+
+void EnterDuringInterrupt(ub::Isolate& /*isolate*/, ub::CallbackData data) {
+    auto* probe = data.As<RealmProbe>();
+    ub::ContextScope entered(*probe->enterFirst);
+    probe->interrupted = true;
+}
+
+/// Asks for an interrupt that enters a realm, then calls a function of another
+/// realm - which V8 runs in that one, with nothing entered on the way - until
+/// the interrupt has fired, and only then asks which realm it was called in.
+void AskAfterInterrupt(const ub::CallbackInfo& info) {
+    auto* probe = info.Data<RealmProbe>();
+    ub::Isolate& isolate = info.GetIsolate();
+    CHECK(isolate.RequestInterrupt(&EnterDuringInterrupt, ub::CallbackData::For(*probe)));
+    CHECK(probe->spin->Get(isolate).Call(*probe->caller, ub::Undefined(isolate)).has_value());
+    probe->seen = info.GetContext().rec();
+}
+
+}  // namespace
+
+TEST_CASE("realms: a callback is told the realm it was called in, whatever it entered since") {
+    // A backend may find the realm only when a callback asks for it. It still
+    // has to answer with the realm the call began in: not one the callback
+    // entered before asking, not the one some script it called ran in, and
+    // not one an interrupt entered in the middle of that script.
+    ub_test::Fixture fixture;
+
+    auto second = ub::Context::New(fixture.iso());
+    auto third = ub::Context::New(fixture.iso());
+    REQUIRE(second.has_value());
+    REQUIRE(third.has_value());
+
+    RealmProbe probe;
+    ub::Global<ub::Function> spin;
+    probe.enterFirst = &*second;
+    probe.scriptRealm = &*third;
+    probe.caller = &fixture.context;
+    probe.spin = &spin;
+    {
+        ub::ContextScope entered(*third);
+        const auto record = ub::Function::New(*third, &RecordRealm, ub::CallbackData::For(probe));
+        REQUIRE(record.has_value());
+        ub_test::Expose(*third, "record", *record);
+        const auto made = ub::Evaluate(
+            *third, "(function () { let s = 0; for (let i = 0; i < 1000000; ++i) { s += i; } return s; })");
+        REQUIRE(made.has_value());
+        const auto asFunction = made->To<ub::Function>();
+        REQUIRE(asFunction.has_value());
+        spin = ub::Global<ub::Function>(fixture.iso(), *asFunction);
+    }
+
+    const auto afterEntering = ub::Function::New(fixture.context, &AskAfterEntering, ub::CallbackData::For(probe));
+    const auto afterScript = ub::Function::New(fixture.context, &AskAfterScript, ub::CallbackData::For(probe));
+    const auto afterInterrupt = ub::Function::New(fixture.context, &AskAfterInterrupt, ub::CallbackData::For(probe));
+    REQUIRE(afterEntering.has_value());
+    REQUIRE(afterScript.has_value());
+    REQUIRE(afterInterrupt.has_value());
+    ub_test::Expose(fixture.context, "afterEntering", *afterEntering);
+    ub_test::Expose(fixture.context, "afterScript", *afterScript);
+    ub_test::Expose(fixture.context, "afterInterrupt", *afterInterrupt);
+
+    REQUIRE(ub::Evaluate(fixture.context, "afterEntering()").has_value());
+    CHECK(probe.seen == fixture.context.rec());
+
+    probe.seen = nullptr;
+    REQUIRE(ub::Evaluate(fixture.context, "afterScript()").has_value());
+    CHECK(probe.seenInside == third->rec());
+    CHECK(probe.seen == fixture.context.rec());
+
+    probe.seen = nullptr;
+    REQUIRE(ub::Evaluate(fixture.context, "afterInterrupt()").has_value());
+    CHECK(probe.interrupted);
+    CHECK(probe.seen == fixture.context.rec());
+}
