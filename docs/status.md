@@ -239,8 +239,10 @@ Not the realm it was compiled in. `unibind/script.h` already argued that compile
 source is an artefact rather than a member of a realm - that is why `Script` is
 not a handle - and this is the rest of that sentence. Compile once, run in every
 sandbox is the job a compiled script is cached for; the alternative makes
-`Run`'s context parameter a lie. V8 pays one `BindToCurrentContext` per run,
-which is its own facility for exactly this.
+`Run`'s context parameter a lie. V8 pays one `BindToCurrentContext` whenever a
+script runs in a realm other than the one it last ran in, which is its own
+facility for exactly this. The bound copy is kept for that last realm only, and
+dropped when the realm's record goes, so it neither outlives nor pins a realm.
 
 ### 11. One isolate per thread at a time (`unibind/isolate.h`)
 
